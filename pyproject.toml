@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcaplens"
+version = "0.1.0"
+description = "Offline PCAP triage for SOC/DFIR: beaconing, DNS tunnelling, scans, exfil, cleartext creds"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+  { name = "Benjamin Christy" },
+]
+keywords = [
+  "pcap",
+  "network-forensics",
+  "dfir",
+  "soc",
+  "mitre-attack",
+  "beaconing",
+  "dns-tunnelling",
+  "incident-response",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Information Technology",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+  "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = [
+  "scapy>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/GameMaster007/pcaplens"
+Repository = "https://github.com/GameMaster007/pcaplens"
+Issues = "https://github.com/GameMaster007/pcaplens/issues"
+Changelog = "https://github.com/GameMaster007/pcaplens/blob/main/CHANGELOG.md"
+
+[project.scripts]
+pcaplens = "pcaplens.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pcaplens = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
