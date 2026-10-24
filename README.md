@@ -92,8 +92,9 @@ print(len(result.findings), result.sha256)
 - Tuned for lab / teaching captures; production networks need baselining
   (software updaters also “beacon”).
 - TLS payloads are opaque — use SNI / JA3 / cert / flow metadata (roadmap).
-- Internal hosts are RFC 1918 IPv4 and IPv6 ULA / link-local / loopback;
-  documentation prefixes (RFC 5737, `2001:db8::/32`) count as external.
+- Internal hosts are RFC 1918 IPv4 (including IPv4-mapped IPv6) and IPv6
+  ULA / link-local / loopback; documentation prefixes (RFC 5737,
+  `2001:db8::/32`) count as external.
 - TCP reassembly is best-effort (seq map); not a full Wireshark replacement.
 - Not an accredited forensic method under the UK Forensic Science Regulator Code.
 

@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `is_internal` now covers IPv4 RFC 1918 and IPv6 RFC 4193 ULA (`fc00::/7`),
   link-local (`fe80::/10`), and loopback (`::1`). RFC 5737 / `2001:db8::/32`
-  documentation addresses stay external. Dual-stack synthetic capture in tests.
+  documentation addresses stay external. IPv4-mapped IPv6 (`::ffff:10.0.0.1`)
+  follows the embedded IPv4 rules; `%zone` suffixes are ignored. Dual-stack
+  synthetic capture in tests.
 
 ## [0.1.0] - 2026-10-21
 

@@ -21,7 +21,6 @@ These are intentionally scoped for new contributors:
 |------------|--------|-------|
 | Extract TLS SNI from ClientHello | Scapy, TLS | No payload decrypt |
 | `--format json` for findings/IOCs | Python, CLI | Keep Markdown default |
-| IPv6 `is_internal` helper | Networking | Dual-stack tests (done) |
 | Quieter logging / `-q` flag | CLI UX | |
 | Docs: GIF of CLI run | Writing | Synthetic PCAP only |
 

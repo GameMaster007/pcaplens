@@ -17,11 +17,12 @@ SCANNER = "10.10.0.99"
 VICTIM6 = "fd00:10:10::21"
 C2_6 = "2001:db8:1::66"
 LINKLOCAL6 = "fe80::21"
+PEER_LINKLOCAL6 = "fe80::5"
 LOOPBACK6 = "::1"
 
 
-def ip_hdr(src: str, dst: str):
-    """IPv4 or IPv6 header from the address family of src/dst."""
+def ip_hdr(src: str, dst: str) -> IP | IPv6:
+    """Build an IPv4 or IPv6 header. A colon in either address means IPv6."""
     if ":" in src or ":" in dst:
         return IPv6(src=src, dst=dst)
     return IP(src=src, dst=dst)
@@ -291,7 +292,7 @@ def build_dual_stack_pcap(path: str | Path) -> Path:
     )
     # Link-local <-> link-local stays internal; must not count as exfil.
     b.tcp_session(
-        LINKLOCAL6, "fe80::5", 80,
+        LINKLOCAL6, PEER_LINKLOCAL6, 80,
         [b"GET / HTTP/1.1\r\nHost: local\r\n\r\n"],
         [b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"],
         20,

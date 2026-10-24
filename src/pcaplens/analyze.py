@@ -26,6 +26,7 @@ from pcaplens.custody import CustodyLog, hash_file, verify
 # documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) as
 # private, which would hide the lab "external" hosts used in tests.
 # IPv6: RFC 4193 ULA (fc00::/7), link-local (fe80::/10), loopback (::1).
+# is_internal unwraps IPv4-mapped IPv6 (::ffff:...) before checking this list.
 INTERNAL_NETWORKS = [
     ipaddress.ip_network(n)
     for n in (
@@ -49,13 +50,26 @@ def format_ts(t: float) -> str:
 
 
 def is_internal(ip: str) -> bool:
-    """True for IPv4 RFC 1918 or IPv6 ULA / link-local / loopback."""
-    addr = ipaddress.ip_address(ip)
+    """Return True if *ip* is a site/local address we treat as internal.
+
+    IPv4 (and IPv4-mapped IPv6 such as ``::ffff:10.0.0.1``): RFC 1918 only.
+    Loopback and RFC 5737 documentation ranges stay external.
+
+    IPv6: RFC 4193 unique-local (``fc00::/7``), link-local (``fe80::/10``),
+    and loopback (``::1``). A ``%zone`` suffix (``fe80::1%eth0``) is ignored
+    because it names a local interface, not a different address.
+    """
+    # Some Python versions reject "fe80::1%eth0"; the zone is not the address.
+    host = ip.rsplit("%", 1)[0]
+    addr = ipaddress.ip_address(host)
+    # ::ffff:x.x.x.x is IPv4 sitting on an IPv6 socket — use the IPv4 rules.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
     return any(addr in network for network in INTERNAL_NETWORKS)
 
 
 def l3_addrs(pkt: Any) -> tuple[str, str] | None:
-    """Return (src, dst) from an IPv4 or IPv6 packet, else None."""
+    """Return (src, dst) from IPv4, or IPv6 if there is no IPv4 layer."""
     if IP in pkt:
         return pkt[IP].src, pkt[IP].dst
     if IPv6 in pkt:
