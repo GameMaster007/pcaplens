@@ -153,8 +153,8 @@ def analyze_pcap(
     pcap = Path(pcap)
     out = Path(out)
     # None means "use built-in defaults" so existing callers stay unchanged.
-    # Named T (not t) so it does not collide with packet timestamps.
-    T = thresholds if thresholds is not None else Thresholds()
+    # Named thr (not t) so it does not collide with packet timestamps.
+    thr = thresholds if thresholds is not None else Thresholds()
     if out.exists():
         shutil.rmtree(out)
     (out / "extracted_objects").mkdir(parents=True)
@@ -194,9 +194,9 @@ def analyze_pcap(
             window = {
                 port
                 for t, port in lst
-                if lst[i][0] <= t <= lst[i][0] + T.SCAN_WINDOW
+                if lst[i][0] <= t <= lst[i][0] + thr.SCAN_WINDOW
             }
-            if len(window) >= T.SCAN_PORTS:
+            if len(window) >= thr.SCAN_PORTS:
                 open_ports = sorted(
                     {
                         p[TCP].sport
@@ -210,7 +210,7 @@ def analyze_pcap(
                 )
                 desc = (
                     f"{src} probed {len(window)} ports on {dst} "
-                    f"in <= {T.SCAN_WINDOW}s (open: {open_ports})"
+                    f"in <= {thr.SCAN_WINDOW}s (open: {open_ports})"
                 )
                 event(
                     lst[i][0],
@@ -228,19 +228,20 @@ def analyze_pcap(
         for t, port in lst:
             conns[(src, dst, port)].append(t)
     for (src, dst, port), times in conns.items():
-        if len(times) < T.BEACON_MIN_CONNS:
+        # Need two timestamps to form a gap; a bad Thresholds object must not crash.
+        if len(times) < max(thr.BEACON_MIN_CONNS, 2):
             continue
         times.sort()
         gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
         med = statistics.median(gaps)
-        regular = [g for g in gaps if abs(g - med) <= T.BEACON_TOLERANCE * med]
+        regular = [g for g in gaps if abs(g - med) <= thr.BEACON_TOLERANCE * med]
         ratio = len(regular) / len(gaps)
-        if med > 0 and ratio >= T.BEACON_MIN_RATIO:
+        if med > 0 and ratio >= thr.BEACON_MIN_RATIO:
             jitter = statistics.pstdev(regular) if len(regular) > 1 else 0.0
             desc = (
                 f"{src} -> {dst}:{port} {len(times)} connections, "
                 f"median interval {med:.1f}s, {ratio:.0%} of intervals "
-                f"within +-{T.BEACON_TOLERANCE:.0%} (jitter {jitter:.1f}s)"
+                f"within +-{thr.BEACON_TOLERANCE:.0%} (jitter {jitter:.1f}s)"
             )
             event(
                 times[0],
@@ -260,7 +261,7 @@ def analyze_pcap(
             base = ".".join(labels[-2:]) if len(labels) >= 2 else q
             dns_by_domain[base].add(q)
             longest = max(labels, key=len)
-            if len(longest) >= T.DNS_LABEL_LEN and entropy(longest) >= T.DNS_ENTROPY:
+            if len(longest) >= thr.DNS_LABEL_LEN and entropy(longest) >= thr.DNS_ENTROPY:
                 dns_by_domain[base].add("__suspicious__")
     for base, names in dns_by_domain.items():
         if "__suspicious__" not in names:
@@ -305,7 +306,7 @@ def analyze_pcap(
     obj_n = 0
     for (src, sport, dst, dport), data in streams.items():
         t = first_seen[(src, sport, dst, dport)]
-        if is_internal(src) and not is_internal(dst) and len(data) >= T.EXFIL_BYTES:
+        if is_internal(src) and not is_internal(dst) and len(data) >= thr.EXFIL_BYTES:
             desc = f"{src} sent {len(data):,} bytes to {dst}:{dport} in one stream"
             event(
                 t,

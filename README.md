@@ -67,7 +67,8 @@ ATT&CK-mapped timeline, IOC table, and top talkers. Also written:
 
 Constants live in `pcaplens.thresholds` and are intentionally simple so you can
 defend them in a viva or tune them on a clean baseline. Override them with
-`--profile lab.yaml` (see `profiles/default.yaml` for the built-in values):
+`--profile lab.yaml` (see `profiles/default.yaml` for the built-in values).
+Unknown keys, wrong types, empty files, and zero/negative counts are rejected:
 
 | Constant | Default | Meaning |
 |----------|---------|---------|
@@ -85,7 +86,9 @@ otherwise metronomic beacon (a plain stdev/mean test would).
 ```python
 from pcaplens import analyze_pcap, load_profile
 
+# built-in defaults
 result = analyze_pcap("capture.pcap", case_id="INC-1", out="out")
+# or override from a YAML profile
 result = analyze_pcap(
     "capture.pcap",
     thresholds=load_profile("lab.yaml"),

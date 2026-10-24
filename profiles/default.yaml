@@ -1,5 +1,6 @@
 # Built-in default detection thresholds for pcaplens.
 # Values match pcaplens.thresholds.Thresholds() exactly.
+# Keys must be these names (no nesting). Counts must be > 0.
 # Usage: pcaplens analyse capture.pcap --profile profiles/default.yaml
 
 SCAN_PORTS: 50          # distinct SYN destination ports in SCAN_WINDOW

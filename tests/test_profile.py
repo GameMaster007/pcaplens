@@ -95,7 +95,8 @@ def test_wrong_type_is_a_clear_error(tmp_path: Path):
     path = _write_yaml(tmp_path / "bad_type.yaml", "SCAN_PORTS: fifty\n")
     with pytest.raises(ProfileError, match="SCAN_PORTS") as exc:
         load_profile(path)
-    assert "integer" in str(exc.value).lower() or "type" in str(exc.value).lower()
+    assert "integer" in str(exc.value).lower()
+    assert "invalid profile" in str(exc.value)
 
 
 def test_bool_is_rejected_as_wrong_type(tmp_path: Path):
@@ -109,7 +110,10 @@ def test_bad_yaml_is_a_clear_error(tmp_path: Path):
     path = _write_yaml(tmp_path / "broken.yaml", "SCAN_PORTS: [unterminated\n")
     with pytest.raises(ProfileError, match="YAML") as exc:
         load_profile(path)
-    assert "broken.yaml" in str(exc.value)
+    msg = str(exc.value)
+    assert "broken.yaml" in msg
+    assert "invalid profile" in msg
+    assert "unicode string" not in msg
 
 
 def test_non_mapping_profile_is_a_clear_error(tmp_path: Path):
@@ -136,14 +140,132 @@ def test_cli_profile_default_yaml(tmp_path: Path):
     assert (out / "report.md").is_file()
 
 
-def test_cli_invalid_profile_exits_nonzero(tmp_path: Path):
+def test_empty_file_is_a_clear_error(tmp_path: Path):
+    path = _write_yaml(tmp_path / "empty.yaml", "")
+    with pytest.raises(ProfileError, match="empty") as exc:
+        load_profile(path)
+    assert "invalid profile" in str(exc.value)
+    assert "empty.yaml" in str(exc.value)
+
+
+def test_comment_only_file_is_a_clear_error(tmp_path: Path):
+    path = _write_yaml(tmp_path / "comments.yaml", "# no keys\n")
+    with pytest.raises(ProfileError, match="empty"):
+        load_profile(path)
+
+
+def test_null_value_is_a_clear_error(tmp_path: Path):
+    path = _write_yaml(tmp_path / "null.yaml", "SCAN_PORTS: null\n")
+    with pytest.raises(ProfileError, match="SCAN_PORTS") as exc:
+        load_profile(path)
+    assert "null" in str(exc.value)
+
+
+def test_zero_threshold_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "zero.yaml", "EXFIL_BYTES: 0\n")
+    with pytest.raises(ProfileError, match="EXFIL_BYTES") as exc:
+        load_profile(path)
+    assert "greater than 0" in str(exc.value)
+
+
+def test_negative_threshold_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "neg.yaml", "SCAN_PORTS: -3\n")
+    with pytest.raises(ProfileError, match="SCAN_PORTS") as exc:
+        load_profile(path)
+    assert "greater than 0" in str(exc.value)
+
+
+def test_beacon_min_conns_below_two_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "one.yaml", "BEACON_MIN_CONNS: 1\n")
+    with pytest.raises(ProfileError, match="at least 2"):
+        load_profile(path)
+
+
+def test_negative_float_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "negf.yaml", "BEACON_TOLERANCE: -0.1\n")
+    with pytest.raises(ProfileError, match="BEACON_TOLERANCE"):
+        load_profile(path)
+
+
+def test_ratio_above_one_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "ratio.yaml", "BEACON_MIN_RATIO: 1.5\n")
+    with pytest.raises(ProfileError, match="between 0 and 1"):
+        load_profile(path)
+
+
+def test_nested_unknown_section_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "nested.yaml", "detections:\n  SCAN_PORTS: 50\n")
+    with pytest.raises(ProfileError, match="unknown key") as exc:
+        load_profile(path)
+    assert "detections" in str(exc.value)
+
+
+def test_nested_value_for_known_key_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "nested_val.yaml", "SCAN_PORTS:\n  count: 50\n")
+    with pytest.raises(ProfileError, match="SCAN_PORTS") as exc:
+        load_profile(path)
+    assert "integer" in str(exc.value).lower()
+
+
+def test_missing_file_is_a_clear_error(tmp_path: Path):
+    missing = tmp_path / "does-not-exist.yaml"
+    with pytest.raises(ProfileError, match="file not found") as exc:
+        load_profile(missing)
+    assert "does-not-exist.yaml" in str(exc.value)
+
+
+def test_empty_mapping_keeps_all_defaults(tmp_path: Path):
+    path = _write_yaml(tmp_path / "empty_map.yaml", "{}\n")
+    assert load_profile(path) == Thresholds()
+
+
+def test_non_finite_float_is_rejected(tmp_path: Path):
+    path = _write_yaml(tmp_path / "inf.yaml", "BEACON_TOLERANCE: .inf\n")
+    with pytest.raises(ProfileError, match="finite"):
+        load_profile(path)
+
+
+def test_mixed_unknown_keys_are_listed(tmp_path: Path):
+    path = _write_yaml(tmp_path / "mixed.yaml", "FOO: 1\n123: 2\n")
+    with pytest.raises(ProfileError, match="unknown key") as exc:
+        load_profile(path)
+    assert "FOO" in str(exc.value)
+    assert "123" in str(exc.value)
+
+
+def test_analyze_survives_min_conns_of_one(tmp_path: Path):
+    """Library-built Thresholds can skip YAML checks; the detector must not crash."""
     pcap = build_clean_pcap(tmp_path / "clean.pcap")
+    result = analyze_pcap(
+        pcap,
+        case_id="PROF-SAFE",
+        out=tmp_path / "out",
+        tshark_cross_check=False,
+        thresholds=Thresholds(BEACON_MIN_CONNS=1),
+    )
+    assert result.findings == []
+
+
+def test_directory_path_is_a_clear_error(tmp_path: Path):
+    with pytest.raises(ProfileError, match="directory") as exc:
+        load_profile(tmp_path)
+    assert "invalid profile" in str(exc.value)
+
+
+def test_non_utf8_file_is_a_clear_error(tmp_path: Path):
+    path = tmp_path / "binary.yaml"
+    path.write_bytes(b"\xff\xfe SCAN_PORTS: 50\n")
+    with pytest.raises(ProfileError, match="UTF-8"):
+        load_profile(path)
+
+
+def test_cli_invalid_profile_exits_nonzero(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     bad = _write_yaml(tmp_path / "bad.yaml", "NOPE: 1\n")
     with pytest.raises(SystemExit) as exc:
         main(
             [
                 "analyse",
-                str(pcap),
+                str(tmp_path / "missing.pcap"),
                 "--profile",
                 str(bad),
                 "--out",
@@ -152,3 +274,24 @@ def test_cli_invalid_profile_exits_nonzero(tmp_path: Path):
             ]
         )
     assert exc.value.code != 0
+    err = capsys.readouterr().err
+    assert "invalid profile" in err
+    assert "unknown key" in err
+    assert "NOPE" in err
+
+
+def test_cli_missing_profile_exits_nonzero(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "analyse",
+                str(tmp_path / "missing.pcap"),
+                "--profile",
+                str(tmp_path / "nope.yaml"),
+                "--no-tshark",
+            ]
+        )
+    assert exc.value.code != 0
+    err = capsys.readouterr().err
+    assert "file not found" in err
+    assert "nope.yaml" in err

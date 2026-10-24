@@ -13,7 +13,7 @@ from pcaplens.thresholds import ProfileError, Thresholds, load_profile
 
 
 def _profile_arg(value: str) -> Thresholds:
-    """argparse type: load a YAML profile or raise a clear CLI error."""
+    """argparse type: turn --profile PATH into Thresholds, or a clear CLI error."""
     try:
         return load_profile(value)
     except ProfileError as exc:
