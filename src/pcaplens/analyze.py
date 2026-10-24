@@ -22,8 +22,20 @@ from scapy.all import DNS, DNSQR, IP, TCP, rdpcap
 from pcaplens import thresholds as T
 from pcaplens.custody import CustodyLog, hash_file, verify
 
-# Bump this when the --format json object shape changes in a breaking way.
+# Bump this string when the --format json object shape changes in a
+# breaking way (renamed, removed, or retyped fields). It is a string,
+# not a number, so "1.0" and "1.10" stay distinct.
 JSON_SCHEMA_VERSION = "1.0"
+
+# Values --format / report_format accept. markdown stays the default so
+# existing scripts keep writing report.md.
+REPORT_FORMATS = ("markdown", "json")
+
+
+def _unsupported_report_format(report_format: str) -> ValueError:
+    allowed = " or ".join(repr(item) for item in REPORT_FORMATS)
+    return ValueError(f"unsupported report format {report_format!r}; use {allowed}")
+
 
 RFC1918 = [
     ipaddress.ip_network(n)
@@ -155,14 +167,22 @@ def build_json_report(
     pcap_unchanged: bool,
     sha256: str,
 ) -> dict[str, Any]:
-    """Build the versioned JSON report (findings, IOCs, custody summary)."""
+    """Build the versioned JSON report written by --format json.
+
+    The object always has the same top-level keys so a parser can rely
+    on them: schema_version, case_id, findings, iocs, custody.
+    findings and iocs may be empty lists (a clean capture).
+    """
     return {
         "schema_version": JSON_SCHEMA_VERSION,
         "case_id": case_id,
+        # Each finding is the same (severity, title, detail) tuple the
+        # Markdown table uses, just as an object instead of a row.
         "findings": [
             {"severity": severity, "title": title, "detail": detail}
             for severity, title, detail in findings
         ],
+        # Same (type, value, context) rows as iocs.csv.
         "iocs": [
             {"type": kind, "value": value, "context": context}
             for kind, value, context in iocs
@@ -187,8 +207,14 @@ def analyze_pcap(
     report_format: str = "markdown",
 ) -> AnalysisResult:
     """Analyse a PCAP offline; write report, CSVs, objects, custody log."""
+    # Fail before deleting --out so a typo or a missing PCAP cannot
+    # wipe a previous run.
+    if report_format not in REPORT_FORMATS:
+        raise _unsupported_report_format(report_format)
     pcap = Path(pcap)
     out = Path(out)
+    if not pcap.is_file():
+        raise FileNotFoundError(f"PCAP not found: {pcap}")
     if out.exists():
         shutil.rmtree(out)
     (out / "extracted_objects").mkdir(parents=True)
@@ -502,9 +528,11 @@ def analyze_pcap(
     findings.sort(key=lambda f: order.get(f[0], 9))
     custody_path = out / "chain_of_custody.jsonl"
     custody_ok, chain = verify(custody_path)
+    # verify() already walked the file; count lines for the JSON summary.
     custody_entries = sum(1 for line in custody_path.read_text().splitlines() if line.strip())
 
-    # --format json writes report.json; markdown (default) writes report.md.
+    # CSVs and the custody log are already on disk. Only the report
+    # filename changes: report.json vs report.md.
     if report_format == "json":
         report_path = out / "report.json"
         payload = build_json_report(
@@ -587,9 +615,7 @@ def analyze_pcap(
         report_path = out / "report.md"
         report_path.write_text("\n".join(md) + "\n", encoding="utf-8")
     else:
-        raise ValueError(
-            f"unsupported report format {report_format!r}; use 'markdown' or 'json'"
-        )
+        raise _unsupported_report_format(report_format)
 
     return AnalysisResult(
         packets=len(pkts),

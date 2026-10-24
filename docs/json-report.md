@@ -4,9 +4,11 @@
 Markdown remains the default (`--format markdown`).
 
 The object includes a `schema_version` field. This document describes
-**schema version `1.0`**. A new `schema_version` is required for breaking
-changes (renamed, removed, or retyped fields). Compatible revisions may add
-optional fields without bumping the major version.
+**schema version `1.0`**. `schema_version` is a **string** (`"1.0"`), not a
+number, so `"1.0"` and `"1.10"` stay distinct. A new `schema_version` is
+required for breaking changes (renamed, removed, or retyped fields).
+Compatible revisions may add optional fields without bumping the major
+version.
 
 CSVs, extracted objects, and `chain_of_custody.jsonl` are still written
 alongside the JSON report.

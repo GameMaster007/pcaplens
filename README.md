@@ -116,6 +116,8 @@ from pcaplens import analyze_pcap
 
 result = analyze_pcap("capture.pcap", case_id="INC-1", out="out")
 print(len(result.findings), result.sha256)
+
+result = analyze_pcap("capture.pcap", out="out-json", report_format="json")
 ```
 
 ## Limitations
