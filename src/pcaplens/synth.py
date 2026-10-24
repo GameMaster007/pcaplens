@@ -13,6 +13,9 @@ C2 = "203.0.113.66"
 DROP = "198.51.100.23"
 FS = "10.10.0.5"
 SCANNER = "10.10.0.99"
+# RFC 5737 / RFC 2606 names for the TLS SNI fixture (issue #1).
+TLS_SERVER = "198.51.100.80"
+TLS_SNI_HOST = "login.example"
 
 
 class _PcapBuilder:
@@ -145,6 +148,47 @@ class _PcapBuilder:
         path.parent.mkdir(parents=True, exist_ok=True)
         wrpcap(str(path), self.packets)
         return path
+
+
+def build_client_hello(hostname: str | None = TLS_SNI_HOST) -> bytes:
+    """Minimal TLS 1.2 ClientHello (RFC 8446 layout, RFC 6066 SNI).
+
+    Bytes only — not a complete handshake. Used by tests and the synthetic
+    PCAP builder. ``hostname=None`` emits a ClientHello with empty extensions.
+    """
+    if hostname:
+        host = hostname.encode("ascii")
+        # name_type(1) + name_len(2) + host
+        server_name = b"\x00" + len(host).to_bytes(2, "big") + host
+        sni_list = len(server_name).to_bytes(2, "big") + server_name
+        sni_ext = (0).to_bytes(2, "big") + len(sni_list).to_bytes(2, "big") + sni_list
+        extensions = len(sni_ext).to_bytes(2, "big") + sni_ext
+    else:
+        extensions = b"\x00\x00"
+
+    # version + 32-byte random + empty session_id + one cipher + null compression
+    body = (
+        b"\x03\x03"
+        + bytes(range(32))
+        + b"\x00"
+        + b"\x00\x02\x00\x2f"
+        + b"\x01\x00"
+        + extensions
+    )
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x03" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def build_tls_sni_pcap(
+    path: str | Path,
+    hostname: str = TLS_SNI_HOST,
+    client_hello: bytes | None = None,
+) -> Path:
+    """One TCP/443 flow whose first payload is a TLS ClientHello."""
+    b = _PcapBuilder(seed=7)
+    payload = client_hello if client_hello is not None else build_client_hello(hostname)
+    b.tcp_session(VICTIM, TLS_SERVER, 443, [payload], [b""], 10.0)
+    return b.write(Path(path))
 
 
 def build_clean_pcap(path: str | Path) -> Path:

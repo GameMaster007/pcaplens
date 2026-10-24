@@ -24,6 +24,7 @@ pcaplens analyse capture.pcap --case-id INC-42 --out ./out
 | Executable download | MZ/ELF magic in HTTP response body | T1105 |
 | Data exfiltration | Large internal→external TCP stream | T1041 |
 | Cleartext FTP creds | `USER`/`PASS` on port 21 (password masked in report) | T1552 / T1040 |
+| TLS SNI | Hostname from the ClientHello (no decryption) | T1573 |
 
 Also notes scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
 
@@ -91,7 +92,7 @@ print(len(result.findings), result.sha256)
 
 - Tuned for lab / teaching captures; production networks need baselining
   (software updaters also “beacon”).
-- TLS payloads are opaque — use SNI / JA3 / cert / flow metadata (roadmap).
+- TLS payloads stay opaque; SNI is read from ClientHello (JA3/JA4 still on the roadmap).
 - TCP reassembly is best-effort (seq map); not a full Wireshark replacement.
 - Not an accredited forensic method under the UK Forensic Science Regulator Code.
 
@@ -106,7 +107,7 @@ print(len(result.findings), result.sha256)
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). Friendly starter tasks:
 
-1. Add JA3/SNI extraction for TLS ClientHello (no decryption).  
+1. Add JA3/JA4 fingerprints from TLS ClientHello (SNI is already extracted).  
 2. Emit findings as Sigma-like YAML or a tiny Suricata rule stub.  
 3. HTML report theme (keep Markdown as default).  
 4. IPv6 support in the internal/external classifier.  
