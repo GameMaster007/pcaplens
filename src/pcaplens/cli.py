@@ -18,6 +18,7 @@ def cmd_analyse(args: argparse.Namespace) -> int:
         examiner=args.examiner,
         out=args.out,
         tshark_cross_check=not args.no_tshark,
+        report_format=args.report_format,
     )
     print(
         f"{result.packets} packets, {len(result.findings)} findings, "
@@ -61,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--case-id", default="CASE-001", help="Case identifier for the report")
     a.add_argument("--examiner", default=None, help="Examiner name for custody log")
     a.add_argument("--out", type=Path, default=Path("output"), help="Output directory")
+    a.add_argument(
+        "--format",
+        dest="report_format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="Report format (markdown is the default; json writes report.json)",
+    )
     a.add_argument(
         "--no-tshark",
         action="store_true",

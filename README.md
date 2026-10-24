@@ -37,8 +37,11 @@ pip install -e ".[dev]"
 # generate a synthetic demo capture (not committed as a binary)
 pcaplens gen-sample --out samples/office_lan.pcap
 
-# analyse it
+# analyse it (Markdown report is the default)
 pcaplens analyse samples/office_lan.pcap --case-id DEMO-001 --out output --examiner "You"
+
+# same analysis as machine-readable JSON
+pcaplens analyse samples/office_lan.pcap --format json --out output-json
 
 # verify the custody log
 pcaplens verify-custody output/chain_of_custody.jsonl
@@ -55,7 +58,9 @@ tshark --export-objects found 21 HTTP objects; this tool extracted 21
 ```
 
 `output/report.md` includes an executive summary, severity-ranked findings,
-ATT&CK-mapped timeline, IOC table, and top talkers. Also written:
+ATT&CK-mapped timeline, IOC table, and top talkers. With `--format json` the
+report is `output/report.json` instead (see [JSON report](#json-report)).
+Also written:
 
 - `events.csv` — full timeline  
 - `iocs.csv` — indicators  
@@ -77,6 +82,32 @@ defend them in a viva or tune them on a clean baseline:
 
 Beaconing uses a **median** gap test so one long upload does not hide an
 otherwise metronomic beacon (a plain stdev/mean test would).
+
+## JSON report
+
+`pcaplens analyse capture.pcap --format json --out ./out` writes
+`out/report.json`. The schema is versioned (`schema_version`, currently
+`"1.0"`) and documented in [docs/json-report.md](docs/json-report.md).
+
+```json
+{
+  "schema_version": "1.0",
+  "case_id": "INC-42",
+  "findings": [
+    {"severity": "HIGH", "title": "Port scan", "detail": "..."}
+  ],
+  "iocs": [
+    {"type": "ip", "value": "10.10.0.99", "context": "internal scanning host"}
+  ],
+  "custody": {
+    "summary": "chain intact (4 entries)",
+    "intact": true,
+    "entries": 4,
+    "pcap_unchanged": true,
+    "sha256": "..."
+  }
+}
+```
 
 ## Library API
 

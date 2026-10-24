@@ -4,7 +4,7 @@
 
 - [ ] TLS ClientHello metadata (SNI, JA3/JA4) without decryption
 - [ ] IPv6 + RFC4193 ULA classification
-- [ ] JSON report export (`--format json`)
+- [x] JSON report export (`--format json`)
 - [ ] Progress reporting for multi-GB captures
 
 ## 0.3
