@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `--profile path.yaml` loads detection thresholds (scan, beacon, DNS, exfil)
+  from a YAML file. Built-in defaults are unchanged; `profiles/default.yaml`
+  matches them exactly. Unknown keys, wrong types, and invalid YAML raise a
+  clear error. Parsing uses `yaml.safe_load` only.
+
 ## [0.1.0] - 2026-10-21
 
 ### Added

@@ -18,8 +18,8 @@ from typing import Any
 
 from scapy.all import DNS, DNSQR, IP, TCP, rdpcap
 
-from pcaplens import thresholds as T
 from pcaplens.custody import CustodyLog, hash_file, verify
+from pcaplens.thresholds import Thresholds
 
 RFC1918 = [
     ipaddress.ip_network(n)
@@ -147,10 +147,14 @@ def analyze_pcap(
     examiner: str | None = None,
     out: str | Path = "output",
     tshark_cross_check: bool = True,
+    thresholds: Thresholds | None = None,
 ) -> AnalysisResult:
     """Analyse a PCAP offline; write report.md, CSVs, objects, custody log."""
     pcap = Path(pcap)
     out = Path(out)
+    # None means "use built-in defaults" so existing callers stay unchanged.
+    # Named T (not t) so it does not collide with packet timestamps.
+    T = thresholds if thresholds is not None else Thresholds()
     if out.exists():
         shutil.rmtree(out)
     (out / "extracted_objects").mkdir(parents=True)
@@ -236,7 +240,7 @@ def analyze_pcap(
             desc = (
                 f"{src} -> {dst}:{port} {len(times)} connections, "
                 f"median interval {med:.1f}s, {ratio:.0%} of intervals "
-                f"within +-10% (jitter {jitter:.1f}s)"
+                f"within +-{T.BEACON_TOLERANCE:.0%} (jitter {jitter:.1f}s)"
             )
             event(
                 times[0],

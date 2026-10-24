@@ -9,6 +9,15 @@ from pcaplens import __version__
 from pcaplens.analyze import analyze_pcap
 from pcaplens.custody import verify as verify_custody
 from pcaplens.synth import build_attack_pcap, build_clean_pcap
+from pcaplens.thresholds import ProfileError, Thresholds, load_profile
+
+
+def _profile_arg(value: str) -> Thresholds:
+    """argparse type: load a YAML profile or raise a clear CLI error."""
+    try:
+        return load_profile(value)
+    except ProfileError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def cmd_analyse(args: argparse.Namespace) -> int:
@@ -18,6 +27,7 @@ def cmd_analyse(args: argparse.Namespace) -> int:
         examiner=args.examiner,
         out=args.out,
         tshark_cross_check=not args.no_tshark,
+        thresholds=args.thresholds,
     )
     print(
         f"{result.packets} packets, {len(result.findings)} findings, "
@@ -65,6 +75,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-tshark",
         action="store_true",
         help="Skip optional tshark HTTP-object cross-check",
+    )
+    a.add_argument(
+        "--profile",
+        dest="thresholds",
+        type=_profile_arg,
+        default=None,
+        metavar="PATH",
+        help=(
+            "YAML file of detection thresholds "
+            "(built-in defaults if omitted; see profiles/default.yaml)"
+        ),
     )
     a.set_defaults(func=cmd_analyse)
 

@@ -10,7 +10,7 @@
 ## 0.3
 
 - [ ] Optional Zeek/Suricata log ingest for correlation
-- [ ] Configurable threshold profiles (YAML)
+- [x] Configurable threshold profiles (YAML)
 - [ ] HTML report
 
 ## Good first issues
