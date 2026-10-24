@@ -62,7 +62,9 @@ pcaplens = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# `tests` is on the path so helpers like malformed_corpus import as siblings
+# under both `pytest` and `python -m pytest` (CI uses the former).
+pythonpath = ["src", "tests"]
 
 [tool.ruff]
 line-length = 100

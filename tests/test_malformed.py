@@ -10,7 +10,8 @@ import struct
 from pathlib import Path
 
 import pytest
-from tests.malformed_corpus import (
+
+from malformed_corpus import (
     pcap_global_header,
     small_corpus,
     write_bogus_incl_len,
@@ -20,7 +21,6 @@ from tests.malformed_corpus import (
     write_many_tiny_packets,
     write_truncated_packet,
 )
-
 from pcaplens.analyze import analyze_pcap, parse_http
 from pcaplens.cli import main
 from pcaplens.parse import ParseLimits, PcapParseError
