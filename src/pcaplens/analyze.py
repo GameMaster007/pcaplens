@@ -16,10 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scapy.all import DNS, DNSQR, IP, TCP, rdpcap
+from scapy.all import DNS, DNSQR, IP, TCP
 
 from pcaplens import thresholds as T
 from pcaplens.custody import CustodyLog, hash_file, verify
+from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, load_packets
 
 RFC1918 = [
     ipaddress.ip_network(n)
@@ -38,7 +39,11 @@ def format_ts(t: float) -> str:
 
 def is_internal(ip: str) -> bool:
     # Do not use ipaddress.is_private: it treats RFC 5737 docs ranges as private.
-    return any(ipaddress.ip_address(ip) in n for n in RFC1918)
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in RFC1918)
 
 
 def entropy(s: str) -> float:
@@ -67,38 +72,71 @@ def sniff_type(data: bytes) -> str:
         return "binary"
 
 
-def reassemble(pkts: Any) -> tuple[dict, dict]:
+def reassemble(
+    pkts: Any, max_stream_bytes: int = DEFAULT_LIMITS.max_stream_bytes
+) -> tuple[dict, dict]:
     streams: dict = defaultdict(dict)
     first_seen: dict = {}
+    sizes: dict = defaultdict(int)
     for p in pkts:
-        if IP in p and TCP in p:
+        try:
+            if IP not in p or TCP not in p:
+                continue
             key = (p[IP].src, p[TCP].sport, p[IP].dst, p[TCP].dport)
             first_seen.setdefault(key, float(p.time))
             payload = bytes(p[TCP].payload)
-            if payload:
-                streams[key].setdefault(p[TCP].seq, payload)
+        except Exception:
+            continue
+        if not payload:
+            continue
+        # Drop further chunks once a stream hits the cap; keep what we have.
+        if sizes[key] + len(payload) > max_stream_bytes:
+            continue
+        streams[key].setdefault(p[TCP].seq, payload)
+        sizes[key] += len(payload)
     return (
         {k: b"".join(v[s] for s in sorted(v)) for k, v in streams.items()},
         first_seen,
     )
 
 
-def parse_http(data: bytes) -> list[tuple[str, dict[str, str], bytes]]:
+def parse_http(
+    data: bytes,
+    *,
+    max_body: int = DEFAULT_LIMITS.max_http_body_bytes,
+    max_header: int = DEFAULT_LIMITS.max_http_header_bytes,
+    max_messages: int = DEFAULT_LIMITS.max_http_messages,
+) -> list[tuple[str, dict[str, str], bytes]]:
+    """Split a byte string into HTTP messages. Never raises on bad input."""
     msgs: list = []
     i = 0
-    while i < len(data):
+    while i < len(data) and len(msgs) < max_messages:
         end = data.find(b"\r\n\r\n", i)
         if end < 0:
+            break
+        if end - i > max_header:
             break
         head = data[i:end].decode("latin-1").split("\r\n")
         headers = {
             k.strip().lower(): v.strip()
             for k, _, v in (h.partition(":") for h in head[1:])
+            if k.strip()
         }
-        length = int(headers.get("content-length", 0) or 0)
+        raw_len = headers.get("content-length", "0") or "0"
+        try:
+            length = int(raw_len)
+        except ValueError:
+            length = 0
+        if length < 0:
+            length = 0
+        available = len(data) - (end + 4)
+        length = min(length, max_body, max(available, 0))
         body = data[end + 4 : end + 4 + length]
-        msgs.append((head[0], headers, body))
-        i = end + 4 + length
+        msgs.append((head[0] if head else "", headers, body))
+        nxt = end + 4 + length
+        if nxt <= i:
+            break
+        i = nxt
     return msgs
 
 
@@ -140,6 +178,27 @@ class AnalysisResult:
     cross_check: str = ""
 
 
+def _dns_qname(pkt: Any, max_bytes: int) -> str | None:
+    """Return a query name, or None if the DNS layer is missing / hostile."""
+    try:
+        if DNS not in pkt or pkt[DNS].qr != 0 or not pkt.haslayer(DNSQR):
+            return None
+        raw = pkt[DNSQR].qname
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            if len(raw) > max_bytes:
+                return None
+            name = raw.decode("ascii", errors="replace")
+        else:
+            name = str(raw)
+            if len(name) > max_bytes:
+                return None
+        return name.rstrip(".")
+    except Exception:
+        return None
+
+
 def analyze_pcap(
     pcap: str | Path,
     *,
@@ -147,9 +206,13 @@ def analyze_pcap(
     examiner: str | None = None,
     out: str | Path = "output",
     tshark_cross_check: bool = True,
+    limits: ParseLimits | None = None,
 ) -> AnalysisResult:
     """Analyse a PCAP offline; write report.md, CSVs, objects, custody log."""
+    limits = limits or DEFAULT_LIMITS
     pcap = Path(pcap)
+    # Fail on missing / oversized files before wiping a previous output dir.
+    pkts = load_packets(pcap, limits)
     out = Path(out)
     if out.exists():
         shutil.rmtree(out)
@@ -158,10 +221,6 @@ def analyze_pcap(
     log = CustodyLog(out / "chain_of_custody.jsonl", case_id, examiner)
     pre = hash_file(pcap)
     log.record("pcap_hashed_before_analysis", file=str(pcap.resolve()), **pre)
-
-    pkts = rdpcap(str(pcap))
-    if not pkts:
-        raise ValueError("PCAP contains no packets")
     t0, t1 = float(pkts[0].time), float(pkts[-1].time)
     events: list = []
     iocs: list = []
@@ -176,13 +235,19 @@ def analyze_pcap(
 
     talk: Counter = Counter()
     for p in pkts:
-        if IP in p:
-            talk[(p[IP].src, p[IP].dst)] += len(p)
+        try:
+            if IP in p:
+                talk[(p[IP].src, p[IP].dst)] += len(p)
+        except Exception:
+            continue
 
     syns: dict = defaultdict(list)
     for p in pkts:
-        if IP in p and TCP in p and p[TCP].flags == "S":
-            syns[(p[IP].src, p[IP].dst)].append((float(p.time), p[TCP].dport))
+        try:
+            if IP in p and TCP in p and p[TCP].flags == "S":
+                syns[(p[IP].src, p[IP].dst)].append((float(p.time), p[TCP].dport))
+        except Exception:
+            continue
 
     for (src, dst), lst in syns.items():
         lst.sort()
@@ -250,14 +315,15 @@ def analyze_pcap(
 
     dns_by_domain: dict = defaultdict(set)
     for p in pkts:
-        if DNS in p and p[DNS].qr == 0 and p.haslayer(DNSQR):
-            q = p[DNSQR].qname.decode(errors="replace").rstrip(".")
-            labels = q.split(".")
-            base = ".".join(labels[-2:]) if len(labels) >= 2 else q
-            dns_by_domain[base].add(q)
-            longest = max(labels, key=len)
-            if len(longest) >= T.DNS_LABEL_LEN and entropy(longest) >= T.DNS_ENTROPY:
-                dns_by_domain[base].add("__suspicious__")
+        q = _dns_qname(p, limits.max_dns_name_bytes)
+        if not q:
+            continue
+        labels = q.split(".")
+        base = ".".join(labels[-2:]) if len(labels) >= 2 else q
+        dns_by_domain[base].add(q)
+        longest = max(labels, key=len)
+        if len(longest) >= T.DNS_LABEL_LEN and entropy(longest) >= T.DNS_ENTROPY:
+            dns_by_domain[base].add("__suspicious__")
     for base, names in dns_by_domain.items():
         if "__suspicious__" not in names:
             continue
@@ -280,13 +346,15 @@ def analyze_pcap(
             f"e.g. {sample[:60]}..."
             + (f" decoded (base32): '{decoded}...'" if decoded else "")
         )
-        first = min(
-            float(p.time)
-            for p in pkts
-            if DNS in p
-            and p.haslayer(DNSQR)
-            and base in p[DNSQR].qname.decode(errors="replace")
-        )
+        first_times = []
+        for p in pkts:
+            qn = _dns_qname(p, limits.max_dns_name_bytes)
+            if qn and base in qn:
+                try:
+                    first_times.append(float(p.time))
+                except Exception:
+                    continue
+        first = min(first_times) if first_times else t0
         event(
             first,
             "HIGH",
@@ -297,7 +365,7 @@ def analyze_pcap(
         findings.append(("HIGH", "DNS tunnelling / exfiltration", desc))
         ioc("domain", base, "DNS tunnelling")
 
-    streams, first_seen = reassemble(pkts)
+    streams, first_seen = reassemble(pkts, max_stream_bytes=limits.max_stream_bytes)
     obj_n = 0
     for (src, sport, dst, dport), data in streams.items():
         t = first_seen[(src, sport, dst, dport)]
@@ -340,9 +408,17 @@ def analyze_pcap(
             b"HTTP/"
         ):
             last_req = (src, "/")
-            for start, headers, body in parse_http(data):
+            for start, headers, body in parse_http(
+                data,
+                max_body=limits.max_http_body_bytes,
+                max_header=limits.max_http_header_bytes,
+                max_messages=limits.max_http_messages,
+            ):
                 if start.startswith(("GET", "POST", "PUT", "HEAD")):
-                    method, uri = start.split(" ")[:2]
+                    parts = start.split()
+                    if len(parts) < 2:
+                        continue
+                    method, uri = parts[0], parts[1]
                     host = headers.get("host", dst)
                     ua = headers.get("user-agent", "")
                     event(
@@ -377,13 +453,18 @@ def analyze_pcap(
                     obj_n += 1
                     host, uri = last_req
                     rev = streams.get((dst, dport, src, sport), b"")
-                    reqs = [
-                        m
-                        for m in parse_http(rev)
-                        if m[0].split(" ")[0] in ("GET", "POST")
-                    ]
+                    reqs = []
+                    for m in parse_http(
+                        rev,
+                        max_body=limits.max_http_body_bytes,
+                        max_header=limits.max_http_header_bytes,
+                        max_messages=limits.max_http_messages,
+                    ):
+                        req_parts = m[0].split()
+                        if len(req_parts) >= 2 and req_parts[0] in ("GET", "POST"):
+                            reqs.append((req_parts, m[1]))
                     if reqs:
-                        uri = reqs[0][0].split(" ")[1]
+                        uri = reqs[0][0][1]
                         host = reqs[0][1].get("host", src)
                     name = (
                         re.sub(

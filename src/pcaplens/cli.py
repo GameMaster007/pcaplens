@@ -8,6 +8,7 @@ from pathlib import Path
 from pcaplens import __version__
 from pcaplens.analyze import analyze_pcap
 from pcaplens.custody import verify as verify_custody
+from pcaplens.parse import PcapParseError
 from pcaplens.synth import build_attack_pcap, build_clean_pcap
 
 
@@ -92,7 +93,21 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except PcapParseError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        # Last-resort: never dump a traceback to an analyst terminal.
+        print(f"error: unexpected failure: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
