@@ -3,7 +3,7 @@
 ## 0.2
 
 - [ ] TLS ClientHello metadata (SNI, JA3/JA4) without decryption
-- [ ] IPv6 + RFC4193 ULA classification
+- [x] IPv6 + RFC4193 ULA classification
 - [ ] JSON report export (`--format json`)
 - [ ] Progress reporting for multi-GB captures
 
@@ -21,7 +21,7 @@ These are intentionally scoped for new contributors:
 |------------|--------|-------|
 | Extract TLS SNI from ClientHello | Scapy, TLS | No payload decrypt |
 | `--format json` for findings/IOCs | Python, CLI | Keep Markdown default |
-| IPv6 `is_internal` helper | Networking | Dual-stack tests |
+| IPv6 `is_internal` helper | Networking | Dual-stack tests (done) |
 | Quieter logging / `-q` flag | CLI UX | |
 | Docs: GIF of CLI run | Writing | Synthetic PCAP only |
 

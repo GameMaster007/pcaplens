@@ -16,14 +16,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scapy.all import DNS, DNSQR, IP, TCP, rdpcap
+from scapy.all import DNS, DNSQR, IP, TCP, IPv6, rdpcap
 
 from pcaplens import thresholds as T
 from pcaplens.custody import CustodyLog, hash_file, verify
 
-RFC1918 = [
+# Site/local prefixes for internal vs external (exfil) classification.
+# IPv4: RFC 1918 only. Do not use ipaddress.is_private — it treats RFC 5737
+# documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) as
+# private, which would hide the lab "external" hosts used in tests.
+# IPv6: RFC 4193 ULA (fc00::/7), link-local (fe80::/10), loopback (::1).
+INTERNAL_NETWORKS = [
     ipaddress.ip_network(n)
-    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    for n in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+        "fe80::/10",
+        "::1/128",
+    )
 ]
 SCRIPTED_UA = re.compile(
     r"python-requests|curl/|wget/|powershell|go-http-client", re.I
@@ -37,8 +49,18 @@ def format_ts(t: float) -> str:
 
 
 def is_internal(ip: str) -> bool:
-    # Do not use ipaddress.is_private: it treats RFC 5737 docs ranges as private.
-    return any(ipaddress.ip_address(ip) in n for n in RFC1918)
+    """True for IPv4 RFC 1918 or IPv6 ULA / link-local / loopback."""
+    addr = ipaddress.ip_address(ip)
+    return any(addr in network for network in INTERNAL_NETWORKS)
+
+
+def l3_addrs(pkt: Any) -> tuple[str, str] | None:
+    """Return (src, dst) from an IPv4 or IPv6 packet, else None."""
+    if IP in pkt:
+        return pkt[IP].src, pkt[IP].dst
+    if IPv6 in pkt:
+        return pkt[IPv6].src, pkt[IPv6].dst
+    return None
 
 
 def entropy(s: str) -> float:
@@ -71,8 +93,10 @@ def reassemble(pkts: Any) -> tuple[dict, dict]:
     streams: dict = defaultdict(dict)
     first_seen: dict = {}
     for p in pkts:
-        if IP in p and TCP in p:
-            key = (p[IP].src, p[TCP].sport, p[IP].dst, p[TCP].dport)
+        addrs = l3_addrs(p)
+        if addrs and TCP in p:
+            src, dst = addrs
+            key = (src, p[TCP].sport, dst, p[TCP].dport)
             first_seen.setdefault(key, float(p.time))
             payload = bytes(p[TCP].payload)
             if payload:
@@ -176,13 +200,15 @@ def analyze_pcap(
 
     talk: Counter = Counter()
     for p in pkts:
-        if IP in p:
-            talk[(p[IP].src, p[IP].dst)] += len(p)
+        addrs = l3_addrs(p)
+        if addrs:
+            talk[addrs] += len(p)
 
     syns: dict = defaultdict(list)
     for p in pkts:
-        if IP in p and TCP in p and p[TCP].flags == "S":
-            syns[(p[IP].src, p[IP].dst)].append((float(p.time), p[TCP].dport))
+        addrs = l3_addrs(p)
+        if addrs and TCP in p and p[TCP].flags == "S":
+            syns[addrs].append((float(p.time), p[TCP].dport))
 
     for (src, dst), lst in syns.items():
         lst.sort()
@@ -197,11 +223,9 @@ def analyze_pcap(
                     {
                         p[TCP].sport
                         for p in pkts
-                        if IP in p
-                        and TCP in p
-                        and p[IP].src == dst
-                        and p[IP].dst == src
+                        if TCP in p
                         and p[TCP].flags == "SA"
+                        and l3_addrs(p) == (dst, src)
                     }
                 )
                 desc = (
