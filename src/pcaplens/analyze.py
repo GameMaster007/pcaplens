@@ -300,10 +300,11 @@ def analyze_pcap(
 
     streams, first_seen = reassemble(pkts)
     obj_n = 0
+    # Reconnects share a dest; SNI rows ignore the client port (sport).
     seen_sni: set[tuple[str, str, int, str]] = set()
     for (src, sport, dst, dport), data in streams.items():
         t = first_seen[(src, sport, dst, dport)]
-        # ClientHello sits at the start of the client->server stream (no decrypt).
+        # ClientHello is the first bytes of the client->server stream.
         sni = extract_sni(data)
         if sni:
             flow = (src, dst, dport, sni)

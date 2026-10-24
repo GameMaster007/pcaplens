@@ -1,24 +1,39 @@
-"""Parse TLS ClientHello metadata from the wire (no decryption).
+"""Read the SNI hostname from a TLS ClientHello. No decryption.
 
-Only the first handshake record of a TCP stream is inspected. JA3/JA4 are
-intentionally out of scope.
+JA3/JA4 fingerprints are intentionally out of scope.
+
+A TLS record on the wire looks like this (RFC 8446):
+
+    type (1) | version (2) | length (2) | fragment
+
+type 0x16 = handshake. The fragment then starts with:
+
+    msg_type (1) | length (3) | message
+
+msg_type 0x01 = ClientHello. After version/random/session/ciphers/compression
+come optional extensions. SNI is extension type 0 (RFC 6066); the first
+valid host_name entry is the hostname we want.
+
+We only walk records from the start of a TCP stream. That is where a
+ClientHello lives, and it avoids scanning huge transfers. Every length
+field is checked before we slice, so a truncated or junk record returns
+None instead of raising.
 """
 from __future__ import annotations
 
-# TLS record content type 0x16 = handshake; 0x01 = ClientHello.
-# SNI is extension type 0 (RFC 6066); name_type 0 = host_name.
 _HANDSHAKE = 0x16
 _CLIENT_HELLO = 0x01
 _EXT_SNI = 0
 _NAME_HOST = 0
+# RFC 1035: a DNS name is at most 253 bytes on the wire.
 _MAX_HOST = 253
 
 
 def extract_sni(data: bytes) -> str | None:
-    """Return the first SNI hostname from a TLS ClientHello, or None.
+    """Return the first usable SNI hostname, or None.
 
-    Every length field is checked before slicing so a truncated or malformed
-    record cannot raise. Non-TLS payloads (HTTP, empty, random) return None.
+    Safe for empty, HTTP, truncated, and malformed bytes. The try/except
+    is a backstop: the helpers below already check bounds before slicing.
     """
     try:
         return _extract_sni(data)
@@ -39,8 +54,6 @@ def _u24(buf: bytes, off: int) -> int | None:
 
 
 def _extract_sni(data: bytes) -> str | None:
-    # Walk consecutive TLS records from the start of the stream only.
-    # Do not scan the whole payload — large transfers are common.
     off = 0
     while off + 5 <= len(data):
         rec_type = data[off]
@@ -48,13 +61,14 @@ def _extract_sni(data: bytes) -> str | None:
         rec_len = _u16(data, off + 3)
         if rec_len is None:
             return None
-        # Stop at the first non-handshake / non-TLS-looking record.
+        # Leave the loop at the first record that is not a TLS handshake.
+        # GREASE and other extensions live *inside* ClientHello, not here.
         if rec_type != _HANDSHAKE or major != 0x03 or minor > 4:
             break
         frag_start = off + 5
         frag_end = frag_start + rec_len
         if rec_len < 1 or frag_end > len(data):
-            return None  # advertised length past the captured bytes
+            return None
         sni = _sni_from_handshake(data[frag_start:frag_end])
         if sni:
             return sni
@@ -75,7 +89,7 @@ def _sni_from_handshake(frag: bytes) -> str | None:
 
 
 def _sni_from_client_hello(body: bytes) -> str | None:
-    # version(2) + random(32) + session_id_len(1)
+    # Skip the fixed prefix: version (2) + random (32) + session_id_len (1).
     if len(body) < 35:
         return None
     off = 34
@@ -99,7 +113,7 @@ def _sni_from_client_hello(body: bytes) -> str | None:
         return None
     off += comp_len
 
-    # SSLv3 ClientHellos may omit extensions entirely.
+    # SSLv3 ClientHellos may omit the extensions block entirely.
     if off == len(body):
         return None
     ext_len = _u16(body, off)
@@ -123,6 +137,7 @@ def _sni_from_extensions(exts: bytes) -> str | None:
             return None
         blob = exts[off : off + elen]
         off += elen
+        # Skip GREASE (RFC 8701, e.g. 0x0A0A) and every other unknown type.
         if etype == _EXT_SNI:
             host = _hostname_from_sni(blob)
             if host:
@@ -132,9 +147,7 @@ def _sni_from_extensions(exts: bytes) -> str | None:
 
 def _hostname_from_sni(data: bytes) -> str | None:
     list_len = _u16(data, 0)
-    if list_len is None:
-        return None
-    if 2 + list_len > len(data):
+    if list_len is None or 2 + list_len > len(data):
         return None
     off = 2
     end = 2 + list_len
@@ -148,8 +161,12 @@ def _hostname_from_sni(data: bytes) -> str | None:
             return None
         raw = data[off : off + name_len]
         off += name_len
+        # RFC 6066: host_name = type 0. Skip empty / non-ASCII / other types
+        # and keep looking so a later usable name still counts.
         if name_type == _NAME_HOST:
-            return _clean_hostname(raw)
+            host = _clean_hostname(raw)
+            if host:
+                return host
     return None
 
 

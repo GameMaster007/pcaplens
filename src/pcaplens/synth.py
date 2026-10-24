@@ -150,29 +150,60 @@ class _PcapBuilder:
         return path
 
 
-def build_client_hello(hostname: str | None = TLS_SNI_HOST) -> bytes:
-    """Minimal TLS 1.2 ClientHello (RFC 8446 layout, RFC 6066 SNI).
+def _as_name_bytes(name: str | bytes) -> bytes:
+    """On the wire SNI is ASCII; UTF-8 is kept only so invalid names can be tested."""
+    if isinstance(name, bytes):
+        return name
+    try:
+        return name.encode("ascii")
+    except UnicodeEncodeError:
+        return name.encode("utf-8")
 
-    Bytes only — not a complete handshake. Used by tests and the synthetic
-    PCAP builder. ``hostname=None`` emits a ClientHello with empty extensions.
+
+def _tls_ext(ext_type: int, data: bytes) -> bytes:
+    """One TLS extension: type (2) + length (2) + data."""
+    return ext_type.to_bytes(2, "big") + len(data).to_bytes(2, "big") + data
+
+
+def _sni_ext(names: list[bytes]) -> bytes:
+    """RFC 6066 server_name list. Each entry is name_type 0 (host_name)."""
+    entries = b"".join(b"\x00" + len(n).to_bytes(2, "big") + n for n in names)
+    return _tls_ext(0, len(entries).to_bytes(2, "big") + entries)
+
+
+def build_client_hello(
+    hostname: str | bytes | None = TLS_SNI_HOST,
+    extra_hostnames: list[str | bytes] | None = None,
+    grease: bool = False,
+) -> bytes:
+    """Minimal TLS 1.2 ClientHello (not a complete handshake).
+
+    ``hostname=None`` omits the SNI extension. Pass ``extra_hostnames`` for
+    more than one SNI entry, and ``grease=True`` to wrap SNI with RFC 8701
+    GREASE extensions (0x0A0A before, 0x1A1A after) so the parser skips both.
     """
-    if hostname:
-        host = hostname.encode("ascii")
-        # name_type(1) + name_len(2) + host
-        server_name = b"\x00" + len(host).to_bytes(2, "big") + host
-        sni_list = len(server_name).to_bytes(2, "big") + server_name
-        sni_ext = (0).to_bytes(2, "big") + len(sni_list).to_bytes(2, "big") + sni_list
-        extensions = len(sni_ext).to_bytes(2, "big") + sni_ext
-    else:
-        extensions = b"\x00\x00"
+    names: list[bytes] = []
+    if hostname is not None:
+        names.append(_as_name_bytes(hostname))
+    if extra_hostnames:
+        names.extend(_as_name_bytes(n) for n in extra_hostnames)
 
-    # version + 32-byte random + empty session_id + one cipher + null compression
+    ext_blobs: list[bytes] = []
+    if grease:
+        ext_blobs.append(_tls_ext(0x0A0A, b"\x00\x00"))
+    if names:
+        ext_blobs.append(_sni_ext(names))
+    if grease:
+        ext_blobs.append(_tls_ext(0x1A1A, b"\x00"))
+    blob = b"".join(ext_blobs)
+    extensions = len(blob).to_bytes(2, "big") + blob
+
     body = (
-        b"\x03\x03"
-        + bytes(range(32))
-        + b"\x00"
-        + b"\x00\x02\x00\x2f"
-        + b"\x01\x00"
+        b"\x03\x03"  # client_version TLS 1.2
+        + bytes(range(32))  # random
+        + b"\x00"  # empty session_id
+        + b"\x00\x02\x00\x2f"  # one cipher: TLS_RSA_WITH_AES_128_CBC_SHA
+        + b"\x01\x00"  # null compression
         + extensions
     )
     handshake = b"\x01" + len(body).to_bytes(3, "big") + body
@@ -183,11 +214,23 @@ def build_tls_sni_pcap(
     path: str | Path,
     hostname: str = TLS_SNI_HOST,
     client_hello: bytes | None = None,
+    dport: int = 443,
+    mss: int = 1400,
+    sessions: int = 1,
 ) -> Path:
-    """One TCP/443 flow whose first payload is a TLS ClientHello."""
+    """TCP flow(s) whose client payload is a TLS ClientHello.
+
+    ``mss`` smaller than the hello splits it across TCP segments; the
+    analyser joins them by sequence number. ``sessions`` > 1 emits
+    reconnects to the same host so de-duplication can be tested.
+    Port is not required to be 443 — TLS on 8443 is the same parse.
+    """
     b = _PcapBuilder(seed=7)
     payload = client_hello if client_hello is not None else build_client_hello(hostname)
-    b.tcp_session(VICTIM, TLS_SERVER, 443, [payload], [b""], 10.0)
+    t = 10.0
+    for _ in range(sessions):
+        t = b.tcp_session(VICTIM, TLS_SERVER, dport, [payload], [b""], t, mss=mss)
+        t += 1.0
     return b.write(Path(path))
 
 
