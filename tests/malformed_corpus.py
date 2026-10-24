@@ -11,19 +11,37 @@ from pathlib import Path
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.l2 import Ether
 from scapy.packet import Raw
-from scapy.utils import wrpcap
+from scapy.utils import wrpcap, wrpcapng
 
-# Classic libpcap magic, little-endian microseconds (tcpdump / scapy default).
-_MAGIC_LE = 0xA1B2C3D4
+# Classic libpcap magics as integers (struct.pack chooses the on-disk order).
+_MAGIC_USEC = 0xA1B2C3D4
+_MAGIC_NSEC = 0xA1B23C4D
 _ETHERNET = 1
 
 
-def pcap_global_header(*, snaplen: int = 65535, network: int = _ETHERNET) -> bytes:
-    """24-byte classic PCAP file header (little-endian, microsecond stamps)."""
-    return struct.pack("<IHHIIII", _MAGIC_LE, 2, 4, 0, 0, snaplen, network)
+def pcap_global_header(
+    *,
+    snaplen: int = 65535,
+    network: int = _ETHERNET,
+    endian: str = "<",
+    nsec: bool = False,
+) -> bytes:
+    """24-byte classic PCAP file header.
+
+    `endian` is '<' (little, the tcpdump/scapy default) or '>' (big).
+    `nsec` selects the nanosecond-resolution magic.
+    """
+    magic = _MAGIC_NSEC if nsec else _MAGIC_USEC
+    return struct.pack(endian + "IHHIIII", magic, 2, 4, 0, 0, snaplen, network)
 
 
-def pcap_record(data: bytes, *, incl_len: int | None = None, orig_len: int | None = None) -> bytes:
+def pcap_record(
+    data: bytes,
+    *,
+    incl_len: int | None = None,
+    orig_len: int | None = None,
+    endian: str = "<",
+) -> bytes:
     """16-byte packet header plus the bytes that actually follow it.
 
     `incl_len` may lie (bogus / truncated cases). Callers decide how many
@@ -33,7 +51,22 @@ def pcap_record(data: bytes, *, incl_len: int | None = None, orig_len: int | Non
         incl_len = len(data)
     if orig_len is None:
         orig_len = incl_len
-    return struct.pack("<IIII", 0, 0, incl_len, orig_len) + data
+    return struct.pack(endian + "IIII", 0, 0, incl_len, orig_len) + data
+
+
+def tiny_packet():
+    """One Ethernet/IP/UDP packet (scapy object) used by several writers."""
+    return (
+        Ether(src="02:00:00:00:00:01", dst="02:00:00:00:00:02")
+        / IP(src="10.10.0.21", dst="10.10.0.1")
+        / UDP(sport=12345, dport=53)
+        / Raw(b"x")
+    )
+
+
+def tiny_frame() -> bytes:
+    """On-wire bytes of `tiny_packet()`."""
+    return bytes(tiny_packet())
 
 
 def write_bytes(path: Path, blob: bytes) -> Path:
@@ -43,9 +76,24 @@ def write_bytes(path: Path, blob: bytes) -> Path:
     return path
 
 
+def write_empty_file(path: Path) -> Path:
+    """Zero-byte file — no magic, no header."""
+    return write_bytes(path, b"")
+
+
 def write_truncated_header(path: Path) -> Path:
     """File shorter than the 24-byte global header."""
     return write_bytes(path, pcap_global_header()[:10])
+
+
+def write_incomplete_packet_header(path: Path) -> Path:
+    """Valid global header, then only 8 of the 16 packet-header bytes."""
+    return write_bytes(path, pcap_global_header() + b"\x00" * 8)
+
+
+def write_zero_length_packet(path: Path) -> Path:
+    """A record that claims to capture 0 bytes (nothing to dissect)."""
+    return write_bytes(path, pcap_global_header() + pcap_record(b"", incl_len=0, orig_len=0))
 
 
 def write_truncated_packet(path: Path) -> Path:
@@ -141,6 +189,28 @@ def write_malformed_http(path: Path) -> Path:
     return path
 
 
+def write_valid_tiny_pcap(path: Path, *, endian: str = "<", nsec: bool = False) -> Path:
+    """One valid Ethernet/IP/UDP frame in the requested byte order."""
+    frame = tiny_frame()
+    blob = pcap_global_header(endian=endian, nsec=nsec) + pcap_record(
+        frame, endian=endian
+    )
+    return write_bytes(path, blob)
+
+
+def write_pcapng(path: Path) -> Path:
+    """One valid frame in PCAPng (built at test time, not committed)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wrpcapng(str(path), [tiny_packet()])
+    return path
+
+
+def write_truncated_pcapng(path: Path) -> Path:
+    """PCAPng magic plus two leftover bytes — not a complete SHB."""
+    return write_bytes(path, b"\x0a\x0d\x0d\x0a\x00\x00")
+
+
 def write_huge_pcap(path: Path, min_bytes: int = 1_048_576) -> Path:
     """Write a valid PCAP that is at least `min_bytes` on disk.
 
@@ -188,10 +258,16 @@ def small_corpus(dir_path: Path) -> dict[str, Path]:
     return {
         "truncated_header": write_truncated_header(dir_path / "truncated_header.pcap"),
         "truncated_packet": write_truncated_packet(dir_path / "truncated_packet.pcap"),
+        "incomplete_packet_header": write_incomplete_packet_header(
+            dir_path / "incomplete_phdr.pcap"
+        ),
         "bogus_incl_len": write_bogus_incl_len(dir_path / "bogus_incl_len.pcap"),
         "bogus_snaplen": write_bogus_snaplen(dir_path / "bogus_snaplen.pcap"),
         "empty": write_empty_pcap(dir_path / "empty.pcap"),
+        "empty_file": write_empty_file(dir_path / "empty_file.pcap"),
+        "zero_length_packet": write_zero_length_packet(dir_path / "zero_len.pcap"),
         "garbage": write_garbage(dir_path / "garbage.pcap"),
+        "truncated_pcapng": write_truncated_pcapng(dir_path / "trunc.pcapng"),
         "malformed_dns": write_malformed_dns(dir_path / "malformed_dns.pcap"),
         "malformed_http": write_malformed_http(dir_path / "malformed_http.pcap"),
     }

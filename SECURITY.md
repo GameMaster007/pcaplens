@@ -37,8 +37,10 @@ exhaustion, long loops, unexpected exceptions).
 pcaplens therefore:
 
 - **Streams** packets from disk instead of loading the whole file via
-  `rdpcap`. Classic PCAP records are parsed by hand so a 2 GiB `incl_len`
-  is rejected before any corresponding read.
+  `rdpcap`. Classic PCAP records (little-endian, big-endian, and
+  nanosecond-resolution magics) are parsed by hand so a 2 GiB `incl_len`
+  is rejected before any corresponding read. PCAPng is accepted too, with
+  the same file-size and per-packet caps.
 - **Bounds memory** with `ParseLimits` (file size, packet count, captured
   packet size, reassembled TCP stream size, HTTP header/body size, DNS
   name length). Defaults live in `pcaplens.parse.ParseLimits` and can be
@@ -51,5 +53,6 @@ pcaplens therefore:
 
 Do not raise the limits to “unlimited” on captures from an unknown
 source. Prefer working on a **copy**; pcaplens hashes the file before and
-after analysis but will not protect you from a hostile file that is
-designed only to crash the process.
+after analysis. Limits and fail-closed errors reduce the crash/hang
+surface, but a bug in a dependency can still exist — report those
+privately (see above).

@@ -20,8 +20,9 @@ def cmd_analyse(args: argparse.Namespace) -> int:
         out=args.out,
         tshark_cross_check=not args.no_tshark,
     )
+    pkt_word = "packet" if result.packets == 1 else "packets"
     print(
-        f"{result.packets} packets, {len(result.findings)} findings, "
+        f"{result.packets} {pkt_word}, {len(result.findings)} findings, "
         f"{len(result.iocs)} IOCs -> {result.report_path}"
     )
     if result.cross_check:

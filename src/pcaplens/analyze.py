@@ -123,10 +123,15 @@ def parse_http(
             if k.strip()
         }
         raw_len = headers.get("content-length", "0") or "0"
-        try:
-            length = int(raw_len)
-        except ValueError:
+        # A 64 KiB string of digits would become a huge int. Real Content-Length
+        # values fit in 16 digits (up to a petabyte).
+        if len(raw_len) > 16:
             length = 0
+        else:
+            try:
+                length = int(raw_len)
+            except ValueError:
+                length = 0
         if length < 0:
             length = 0
         available = len(data) - (end + 4)
@@ -232,6 +237,14 @@ def analyze_pcap(
     def ioc(kind: str, value: str, context: str) -> None:
         if (kind, value) not in {(k, v) for k, v, _ in iocs}:
             iocs.append((kind, value, context))
+
+    def http_messages(blob: bytes) -> list:
+        return parse_http(
+            blob,
+            max_body=limits.max_http_body_bytes,
+            max_header=limits.max_http_header_bytes,
+            max_messages=limits.max_http_messages,
+        )
 
     talk: Counter = Counter()
     for p in pkts:
@@ -408,12 +421,7 @@ def analyze_pcap(
             b"HTTP/"
         ):
             last_req = (src, "/")
-            for start, headers, body in parse_http(
-                data,
-                max_body=limits.max_http_body_bytes,
-                max_header=limits.max_http_header_bytes,
-                max_messages=limits.max_http_messages,
-            ):
+            for start, headers, body in http_messages(data):
                 if start.startswith(("GET", "POST", "PUT", "HEAD")):
                     parts = start.split()
                     if len(parts) < 2:
@@ -454,12 +462,7 @@ def analyze_pcap(
                     host, uri = last_req
                     rev = streams.get((dst, dport, src, sport), b"")
                     reqs = []
-                    for m in parse_http(
-                        rev,
-                        max_body=limits.max_http_body_bytes,
-                        max_header=limits.max_http_header_bytes,
-                        max_messages=limits.max_http_messages,
-                    ):
+                    for m in http_messages(rev):
                         req_parts = m[0].split()
                         if len(req_parts) >= 2 and req_parts[0] in ("GET", "POST"):
                             reqs.append((req_parts, m[1]))
