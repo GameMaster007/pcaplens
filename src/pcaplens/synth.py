@@ -410,6 +410,34 @@ def build_dual_stack_pcap(path: str | Path) -> Path:
     return b.write(Path(path))
 
 
+def build_http_abuse_pcap(path: str | Path) -> Path:
+    """Scripted UAs, a suspicious path, and a hashed non-executable download."""
+    b = _PcapBuilder(seed=8080)
+    # Ordinary page: must not become a finding.
+    b.http_get(
+        VICTIM, "192.0.2.80", "news.example", "/",
+        b"<html><body>ordinary page</body></html>",
+        "text/html",
+        1.0,
+    )
+    b.http_get(
+        VICTIM, DROP, "files.example", "/admin/settings",
+        b"<html>panel</html>",
+        "text/html",
+        5.0,
+        ua="curl/8.6.0",
+    )
+    zip_body = b"PK\x03\x04" + bytes(b.rng.randrange(256) for _ in range(80))
+    b.http_get(
+        VICTIM, DROP, "files.example", "/export/dump.zip",
+        zip_body,
+        "application/zip",
+        8.0,
+        ua="wget/1.21",
+    )
+    return b.write(Path(path))
+
+
 def build_dns_abuse_pcap(path: str | Path) -> Path:
     """NXDOMAIN burst, DGA-like names, an odd long label, many subdomains."""
     b = _PcapBuilder(seed=5353)
