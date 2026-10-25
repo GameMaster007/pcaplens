@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HTTP analysis module: scripted user-agents, suspicious URLs, and
   hashed file downloads (non-executable types). Executable downloads
   remain a separate CRITICAL finding.
+- Port-scan / SYN-scan module: vertical port scan (existing), half-open
+  SYN scan (many SYNs, few completed handshakes), and horizontal scans.
 
 ## [0.1.0] - 2026-10-21
 
