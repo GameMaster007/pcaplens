@@ -21,6 +21,7 @@ pcaplens analyse capture.pcap --profile profiles/default.yaml --out ./out
 |-----------|--------|--------|
 | C2 beaconing | Regular connection intervals, low jitter (median-based) | T1071.001 |
 | DNS tunnelling | Long / high-entropy subdomain labels (+ optional base32 decode) | T1071.004 / T1048 |
+| DNS abuse | NXDOMAIN bursts, simple DGA score, odd labels, many unique subdomains | T1071.004 / T1568.002 |
 | Port scan | Many distinct SYN destinations in a short window | T1046 |
 | Executable download | MZ/ELF magic in HTTP response body | T1105 |
 | Data exfiltration | Large internal→external TCP stream | T1041 |
