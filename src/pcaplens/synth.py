@@ -410,6 +410,44 @@ def build_dual_stack_pcap(path: str | Path) -> Path:
     return b.write(Path(path))
 
 
+def build_syn_scan_pcap(path: str | Path) -> Path:
+    """Half-open SYN scan: enough SYNs to trip SYN-scan, below SCAN_PORTS."""
+    b = _PcapBuilder(seed=1046)
+    open_ports = {22, 80}
+    # 30 ports < default SCAN_PORTS (50) so only the SYN-scan rule fires.
+    ports = list(range(20, 50))
+    for i, port in enumerate(ports):
+        t = 1.0 + i * 0.02
+        sp = b.rng.randrange(40000, 65000)
+        b.add(
+            ip_hdr(SCANNER, FS)
+            / TCP(sport=sp, dport=port, flags="S", seq=b.rng.randrange(2**31)),
+            t,
+        )
+        if port in open_ports:
+            b.add(ip_hdr(FS, SCANNER) / TCP(sport=port, dport=sp, flags="SA"), t + 0.001)
+            b.add(ip_hdr(SCANNER, FS) / TCP(sport=sp, dport=port, flags="R"), t + 0.002)
+        else:
+            b.add(ip_hdr(FS, SCANNER) / TCP(sport=port, dport=sp, flags="RA"), t + 0.001)
+    return b.write(Path(path))
+
+
+def build_horizontal_scan_pcap(path: str | Path) -> Path:
+    """Many hosts, one port — not a vertical port scan and below SYN_SCAN_MIN."""
+    b = _PcapBuilder(seed=1047)
+    for i in range(18):
+        dst = f"10.10.3.{i + 1}"
+        t = 1.0 + i * 0.05
+        sp = b.rng.randrange(40000, 65000)
+        b.add(
+            ip_hdr(SCANNER, dst)
+            / TCP(sport=sp, dport=22, flags="S", seq=b.rng.randrange(2**31)),
+            t,
+        )
+        b.add(ip_hdr(dst, SCANNER) / TCP(sport=22, dport=sp, flags="RA"), t + 0.001)
+    return b.write(Path(path))
+
+
 def build_http_abuse_pcap(path: str | Path) -> Path:
     """Scripted UAs, a suspicious path, and a hashed non-executable download."""
     b = _PcapBuilder(seed=8080)

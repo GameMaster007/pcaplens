@@ -24,6 +24,7 @@ from pcaplens.dns_analysis import analyze_dns
 from pcaplens.http_analysis import SCRIPTED_UA, analyze_http, parse_http, sniff_type
 from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError, load_packets
 from pcaplens.report import ReportData, render_markdown
+from pcaplens.scan import analyze_scans
 from pcaplens.thresholds import Thresholds
 from pcaplens.tls import extract_sni
 
@@ -303,6 +304,12 @@ def analyze_pcap(
         except Exception:
             continue
 
+    extra_sf, extra_se, extra_si = analyze_scans(pkts, thr)
+    findings.extend(extra_sf)
+    events.extend(extra_se)
+    for kind, value, context in extra_si:
+        ioc(kind, value, context)
+
     syns: dict = defaultdict(list)
     for p in pkts:
         try:
@@ -311,39 +318,6 @@ def analyze_pcap(
                 syns[addrs].append((float(p.time), p[TCP].dport))
         except Exception:
             continue
-
-    for (src, dst), lst in syns.items():
-        lst.sort()
-        for i in range(len(lst)):
-            window = {
-                port
-                for t, port in lst
-                if lst[i][0] <= t <= lst[i][0] + thr.SCAN_WINDOW
-            }
-            if len(window) >= thr.SCAN_PORTS:
-                open_ports = sorted(
-                    {
-                        p[TCP].sport
-                        for p in pkts
-                        if TCP in p
-                        and p[TCP].flags == "SA"
-                        and l3_addrs(p) == (dst, src)
-                    }
-                )
-                desc = (
-                    f"{src} probed {len(window)} ports on {dst} "
-                    f"in <= {thr.SCAN_WINDOW}s (open: {open_ports})"
-                )
-                event(
-                    lst[i][0],
-                    "HIGH",
-                    "Port scan",
-                    desc,
-                    "T1046 Network Service Discovery",
-                )
-                findings.append(("HIGH", "Port scan", desc))
-                ioc("ip", src, "internal scanning host")
-                break
 
     conns: dict = defaultdict(list)
     for (src, dst), lst in syns.items():
