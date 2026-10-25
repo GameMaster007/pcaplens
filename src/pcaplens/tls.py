@@ -27,6 +27,9 @@ _EXT_SNI = 0
 _NAME_HOST = 0
 # RFC 1035: a DNS name is at most 253 bytes on the wire.
 _MAX_HOST = 253
+# ClientHello is the first handshake record(s). A hostile 8 MiB stream of
+# 5-byte handshake headers must not walk millions of times.
+_MAX_RECORDS = 32
 
 
 def extract_sni(data: bytes) -> str | None:
@@ -55,7 +58,9 @@ def _u24(buf: bytes, off: int) -> int | None:
 
 def _extract_sni(data: bytes) -> str | None:
     off = 0
-    while off + 5 <= len(data):
+    seen = 0
+    while off + 5 <= len(data) and seen < _MAX_RECORDS:
+        seen += 1
         rec_type = data[off]
         major, minor = data[off + 1], data[off + 2]
         rec_len = _u16(data, off + 3)
