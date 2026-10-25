@@ -12,7 +12,7 @@
 
 - [ ] Optional Zeek/Suricata log ingest for correlation
 - [x] Configurable threshold profiles (YAML)
-- [ ] HTML report
+- [x] HTML report (`pcaplens report --format html`)
 
 ## Good first issues
 

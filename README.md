@@ -43,6 +43,9 @@ pcaplens gen-sample --out samples/office_lan.pcap
 # analyse it (Markdown report is the default)
 pcaplens analyse samples/office_lan.pcap --case-id DEMO-001 --out output --examiner "You"
 
+# Markdown + HTML report of findings, IOCs, and the timeline
+pcaplens report samples/office_lan.pcap --case-id DEMO-001 --out output --no-tshark
+
 # same analysis as machine-readable JSON
 pcaplens analyse samples/office_lan.pcap --format json --out output-json
 

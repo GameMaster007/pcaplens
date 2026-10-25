@@ -9,6 +9,7 @@ from pcaplens import __version__
 from pcaplens.analyze import REPORT_FORMATS, analyze_pcap
 from pcaplens.custody import verify as verify_custody
 from pcaplens.parse import PcapParseError
+from pcaplens.report import REPORT_KINDS, write_reports
 from pcaplens.synth import build_attack_pcap, build_clean_pcap
 from pcaplens.thresholds import ProfileError, Thresholds, load_profile
 
@@ -50,6 +51,33 @@ def cmd_verify(args: argparse.Namespace) -> int:
     ok, msg = verify_custody(args.log)
     print(("OK: " if ok else "TAMPERED: ") + msg)
     return 0 if ok else 1
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    """Analyse a PCAP and write Markdown and/or HTML reports."""
+    try:
+        result = analyze_pcap(
+            args.pcap,
+            case_id=args.case_id,
+            examiner=args.examiner,
+            out=args.out,
+            tshark_cross_check=not args.no_tshark,
+            thresholds=args.thresholds,
+            report_format="markdown",
+        )
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if result.report_data is None:
+        print("error: analysis produced no report data", file=sys.stderr)
+        return 1
+    written = write_reports(args.out, result.report_data, args.report_kind)
+    names = ", ".join(str(path.name) for path in written)
+    print(
+        f"{result.packets} packets, {len(result.findings)} findings, "
+        f"{len(result.iocs)} IOCs -> {names}"
+    )
+    return 0
 
 
 def cmd_gen_sample(args: argparse.Namespace) -> int:
@@ -104,6 +132,39 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     a.set_defaults(func=cmd_analyse)
+
+    r = sub.add_parser(
+        "report",
+        help="Write Markdown and/or HTML reports of findings, IOCs, and timeline",
+    )
+    r.add_argument("pcap", type=Path, help="Path to .pcap / .pcapng")
+    r.add_argument("--case-id", default="CASE-001", help="Case identifier for the report")
+    r.add_argument("--examiner", default=None, help="Examiner name for custody log")
+    r.add_argument("--out", type=Path, default=Path("output"), help="Output directory")
+    r.add_argument(
+        "--format",
+        dest="report_kind",
+        choices=REPORT_KINDS,
+        default="both",
+        help="markdown, html, or both (default both)",
+    )
+    r.add_argument(
+        "--no-tshark",
+        action="store_true",
+        help="Skip optional tshark HTTP-object cross-check",
+    )
+    r.add_argument(
+        "--profile",
+        dest="thresholds",
+        type=_profile_arg,
+        default=None,
+        metavar="PATH",
+        help=(
+            "YAML file of detection thresholds "
+            "(built-in defaults if omitted; see profiles/default.yaml)"
+        ),
+    )
+    r.set_defaults(func=cmd_report)
 
     v = sub.add_parser("verify-custody", help="Verify a chain-of-custody JSONL log")
     v.add_argument("log", type=Path, help="Path to chain_of_custody.jsonl")
