@@ -110,6 +110,16 @@ def test_cli_missing_pcap(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     assert "PCAP not found" in err
 
 
+def test_cli_help_lists_examples_and_exit_codes(capsys: pytest.CaptureFixture[str]):
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    text = capsys.readouterr().out
+    assert "pcaplens analyse capture.pcap" in text
+    assert "exit codes:" in text
+    assert "130 interrupted" in text
+
+
 def test_cli_last_format_flag_wins(tmp_path: Path):
     """Repeated --format flags: argparse keeps the last value."""
     pcap = build_clean_pcap(tmp_path / "c.pcap")

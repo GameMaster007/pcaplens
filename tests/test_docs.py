@@ -27,5 +27,8 @@ def test_viva_doc_covers_exam_topics():
         "yaml.safe_load",
         "Computer Misuse Act",
         "ATT&CK",
+        "250",
+        "exit codes",
+        "1M",
     ):
         assert needle in text, f"missing viva topic: {needle}"
