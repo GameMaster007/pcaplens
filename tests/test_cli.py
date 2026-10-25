@@ -85,7 +85,7 @@ def test_cli_analyse_json_unicode_case_id(tmp_path: Path):
 def test_cli_analyse_empty_pcap(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     pcap = tmp_path / "empty.pcap"
     wrpcap(str(pcap), [])
-    assert _analyse(pcap, tmp_path / "o", "--format", "json") == 1
+    assert _analyse(pcap, tmp_path / "o", "--format", "json") == 2
     err = capsys.readouterr().err
     assert "error:" in err
     assert "no packets" in err

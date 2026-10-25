@@ -44,8 +44,13 @@ def cmd_analyse(args: argparse.Namespace) -> int:
             report_format=args.report_format,
             limits=_limits_from_args(args),
         )
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except PcapParseError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (ValueError, OSError) as exc:
-        # Empty captures, a bad report_format, a missing PCAP, or parse error.
         print(f"error: {exc}", file=sys.stderr)
         return 1
     pkt_word = "packet" if result.packets == 1 else "packets"
@@ -77,6 +82,12 @@ def cmd_report(args: argparse.Namespace) -> int:
             report_format="markdown",
             limits=_limits_from_args(args),
         )
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except PcapParseError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

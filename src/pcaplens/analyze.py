@@ -23,16 +23,12 @@ from pcaplens.custody import CustodyLog, hash_file, verify
 from pcaplens.dns_analysis import analyze_dns
 from pcaplens.http_analysis import SCRIPTED_UA, analyze_http, parse_http, sniff_type
 from pcaplens.ingest import ingest_capture
+from pcaplens.json_schema import JSON_SCHEMA_VERSION, validate_json_report
 from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError
 from pcaplens.report import ReportData, render_markdown
 from pcaplens.scan import analyze_scans
 from pcaplens.thresholds import Thresholds
 from pcaplens.tls import extract_sni
-
-# Bump this string when the --format json object shape changes in a
-# breaking way (renamed, removed, or retyped fields). It is a string,
-# not a number, so "1.0" and "1.10" stay distinct.
-JSON_SCHEMA_VERSION = "1.0"
 
 # Values --format / report_format accept. markdown stays the default so
 # existing scripts keep writing report.md.
@@ -197,7 +193,7 @@ def build_json_report(
     on them: schema_version, case_id, findings, iocs, custody.
     findings and iocs may be empty lists (a clean capture).
     """
-    return {
+    payload = {
         "schema_version": JSON_SCHEMA_VERSION,
         "case_id": case_id,
         # Each finding is the same (severity, title, detail) tuple the
@@ -219,6 +215,8 @@ def build_json_report(
             "sha256": sha256,
         },
     }
+    validate_json_report(payload)
+    return payload
 
 
 def analyze_pcap(
@@ -607,6 +605,7 @@ def analyze_pcap(
             pcap_unchanged=unchanged,
             sha256=pre["sha256"],
         )
+        validate_json_report(payload)
         report_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
