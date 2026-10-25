@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail-closed limits. A 1M-packet synthetic capture is streamed in CI.
 - Committed synthetic fixtures (`samples/fixtures/`), a JSON report
   schema checker, and a CLI exit-code contract (0 / 1 / 2 / 130).
+- `mypy` on `src/pcaplens` in CI; `pcaplens --help` examples and exit
+  codes; viva doc updated for streaming, FP cut-offs, and schema.
 
 ### Changed
 - GitHub Actions CI runs on every pull request (not only those targeting

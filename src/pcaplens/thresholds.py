@@ -82,7 +82,7 @@ def _check_value(key: str, value: object, expected: type) -> int | float:
 
     if expected is float:
         # YAML 1 is int; accept it as 1.0 for ratio / entropy fields.
-        if type(value) is bool or type(value) not in (int, float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ProfileError(f"{key} must be a number, got {type(value).__name__}")
         number = float(value)
         if not math.isfinite(number):
@@ -142,4 +142,4 @@ def load_profile(path: str | Path) -> Thresholds:
             updates[name] = _check_value(name, raw, _FIELD_TYPES[key])
         except ProfileError as exc:
             raise _invalid(path, str(exc)) from exc
-    return replace(Thresholds(), **updates)
+    return replace(Thresholds(), **updates)  # type: ignore[arg-type]

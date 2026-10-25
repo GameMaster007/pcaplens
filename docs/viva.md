@@ -22,13 +22,18 @@ under the UK Forensic Science Regulator Code.
    length (`incl_len` / `caplen`), not on-wire `orig_len` / `wirelen`.
    Linux cooked captures (`LINKTYPE_LINUX_SLL` / `SLL2`, `tcpdump -i any`)
    and DLT_RAW IPv6 are decoded.
-3. **Reassemble TCP** by sequence number. Retransmits share a seq and
+3. **Ingest once.** Scapy frames are turned into compact TCP/DNS facts
+   and dropped. Default cap is 250 000 packets / 512 MiB; override with
+   `--max-packets` / `--max-file-bytes`. A 1M-packet synthetic file is
+   streamed in CI.
+4. **Reassemble TCP** by sequence number. Retransmits share a seq and
    do not spend the stream-size budget.
-4. **Detect.** Independent modules (scan, DNS, HTTP, beacon, exfil,
+5. **Detect.** Independent modules (scan, DNS, HTTP, beacon, exfil,
    FTP, TLS SNI) append findings / events / IOCs.
-5. **Write.** Markdown or JSON report, `events.csv`, `iocs.csv`,
+6. **Write.** Markdown or JSON report, `events.csv`, `iocs.csv`,
    `extracted_objects/`, `chain_of_custody.jsonl`. Pre- and post-hash
-   of the PCAP must match.
+   of the PCAP must match. JSON is checked against schema 1.0 before
+   write.
 
 ## Why these detection choices
 
@@ -55,9 +60,10 @@ executive line stays “No suspicious activity…” on clean HTTPS.
 
 **DNS.** Long + high-entropy labels (default 40 chars, 3.5 bits/char)
 flag tunnelling; optional base32 decode is a lab convenience. The DNS
-module adds NXDOMAIN bursts, a simple DGA score (many unique
-high-entropy labels), odd mid-length labels, and many unique
-subdomains of one base.
+module adds NXDOMAIN bursts (15 in 10s), a simple DGA score (**20**
+unique labels, length 12, entropy 3.5 — raised after a software-update
+CDN false-positive), odd mid-length labels, and many unique subdomains
+of one base (**16** names, first label ≥ 24).
 
 **HTTP.** Scripted User-Agents (`curl`, `wget`, `python-requests`, …)
 are LOW. Suspicious paths (`.exe` / `.ps1`, `/admin`, `cmd=`) are
@@ -66,7 +72,8 @@ a single CRITICAL finding so it is not reported twice.
 
 **Scans.** Vertical: ≥50 distinct SYN dports in 60s. SYN-scan: ≥20
 SYN-only probes with few completed handshakes (half-open / `-sS`).
-Horizontal: ≥15 hosts and ≤3 ports.
+Horizontal: ≥15 hosts and ≤3 ports, **unless** those ports are only
+80/443/8080/8443 *and* handshakes complete (ordinary browsing / streaming).
 
 **Exfil.** One internal→external TCP stream ≥100 KiB.
 
@@ -81,6 +88,8 @@ Horizontal: ≥15 hosts and ≤3 ports.
 | TCP retransmit storm | Dedupe by seq |
 | `Content-Length: 999…` or a 40-digit string | Cap / ignore; never `int()` a huge digit string blindly |
 | `tcpdump -i any` | SLL / SLL2 headers |
+| Tiny TLS handshake records forever | Walk at most 32 records |
+| Seeded mutate/truncate fuzz | Fail closed; no hang / no giant alloc |
 
 ## Thresholds and profiles
 
@@ -97,6 +106,34 @@ The custody log is a hash chain: each entry includes the hash of the
 previous line. `verify-custody` walks the file. Work on a **copy**.
 Only analyse traffic you are authorised to examine (UK: Computer Misuse Act 1990).
 Do not commit customer PCAPs or credentials.
+
+## CLI exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Missing file or unexpected failure |
+| 2 | Usage error, or empty / malformed / unreadable PCAP |
+| 130 | Interrupted |
+
+`pcaplens --help` lists the same table plus copy-paste examples.
+
+## Likely extra viva questions
+
+**Why not keep every Scapy packet?** A 1M-frame capture would be
+gigabytes of dissected objects. Ingest streams the file, stores compact
+facts, and drops each frame. Memory stays bounded by limits, not by
+file size.
+
+**Why did DGA / horizontal scan get stricter?** A Windows-Update CDN
+mints many unique high-entropy names; a video client talks to many
+hosts on 443. Those are not C2 or a port scan. Thresholds are
+documented in `dns_analysis.py` / `scan.py` and tested with benign
+fixtures.
+
+**How do you know the JSON will not drift?** `validate_json_report`
+runs before `report.json` is written. Schema 1.0 keys are required;
+unknown keys fail.
 
 ## What I would say if asked “is this production-ready?”
 

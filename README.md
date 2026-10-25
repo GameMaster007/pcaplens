@@ -228,9 +228,10 @@ See [docs/ROADMAP.md](docs/ROADMAP.md). Friendly starter tasks:
 pip install -e ".[dev]"
 pytest -q
 ruff check src tests scripts
+mypy src/pcaplens
 ```
 
-CI runs ruff + pytest on Python 3.10–3.12 (see `.github/workflows/ci.yml`).
+CI runs ruff + mypy + pytest on Python 3.10–3.12 (see `.github/workflows/ci.yml`).
 
 ## License
 

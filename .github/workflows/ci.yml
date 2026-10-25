@@ -29,5 +29,8 @@ jobs:
       - name: Ruff lint
         run: ruff check src tests scripts
 
+      - name: Mypy
+        run: mypy src/pcaplens
+
       - name: Pytest
         run: pytest -q

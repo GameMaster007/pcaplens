@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 from dataclasses import replace
 from pathlib import Path
 
@@ -117,9 +118,26 @@ def cmd_gen_sample(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pcaplens",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Offline PCAP triage for SOC / DFIR: beaconing, DNS tunnelling, "
             "port scans, executable downloads, exfiltration, cleartext FTP."
+        ),
+        epilog=textwrap.dedent(
+            """\
+            examples:
+              pcaplens analyse capture.pcap --case-id INC-42 --out ./out --no-tshark
+              pcaplens analyse capture.pcap --format json --profile profiles/default.yaml
+              pcaplens report capture.pcap --format html --out ./out
+              pcaplens verify-custody out/chain_of_custody.jsonl
+              pcaplens gen-sample --clean --out samples/clean.pcap
+
+            exit codes:
+              0   success
+              1   missing file or unexpected failure
+              2   usage error, or empty/malformed/unreadable PCAP
+              130 interrupted
+            """
         ),
     )
     p.add_argument("--version", action="version", version=f"pcaplens {__version__}")
