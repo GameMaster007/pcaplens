@@ -7,9 +7,10 @@ event timeline, extracted HTTP objects, and a hash-chained chain-of-custody log.
 Every finding is mapped to [MITRE ATT&CK](https://attack.mitre.org/).
 
 ```bash
-pip install pcaplens          # once published
-pcaplens analyse capture.pcap --case-id INC-42 --out ./out
-pcaplens analyse capture.pcap --profile profiles/default.yaml --out ./out
+# from a clone (not on PyPI)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+pcaplens analyse samples/fixtures/syn_scan.pcap --case-id INC-42 --out ./out --no-tshark
 ```
 
 > **Authorised use only.** Analyse traffic you own or have explicit permission
@@ -36,22 +37,26 @@ scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
 
 ## Quickstart
 
+Committed fixtures under `samples/fixtures/` are tiny synthetic PCAPs
+(no private traffic). Use a **different** `--out` for each command:
+`analyse` and `report` both replace the output directory.
+
 ```bash
 # from a clone
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e .
 
-# generate a synthetic demo capture (not committed as a binary)
-pcaplens gen-sample --out samples/office_lan.pcap
-
-# analyse it (Markdown report is the default)
-pcaplens analyse samples/office_lan.pcap --case-id DEMO-001 --out output --examiner "You"
+# triage the SYN-scan fixture (Markdown report is the default)
+pcaplens analyse samples/fixtures/syn_scan.pcap --case-id DEMO-001 --out output --examiner "You" --no-tshark
 
 # Markdown + HTML report of findings, IOCs, and the timeline
-pcaplens report samples/office_lan.pcap --case-id DEMO-001 --out output --no-tshark
+pcaplens report samples/fixtures/syn_scan.pcap --case-id DEMO-001 --out output-report --no-tshark
 
 # same analysis as machine-readable JSON
-pcaplens analyse samples/office_lan.pcap --format json --out output-json
+pcaplens analyse samples/fixtures/syn_scan.pcap --format json --out output-json --no-tshark
+
+# a clean browse fixture should print 0 findings
+pcaplens analyse samples/fixtures/clean_browse.pcap --case-id DEMO-CLEAN --out output-clean --no-tshark
 
 # verify the custody log
 pcaplens verify-custody output/chain_of_custody.jsonl
@@ -66,40 +71,45 @@ A 5-minute path from clone to a defendable report. Use the synthetic sample
 in a viva; do not commit real captures.
 
 1. **Install** (Python 3.10–3.12). Runtime deps are Scapy and PyYAML only.
+   `pip install -e .` is enough to run the CLI; `.[dev]` adds pytest /
+   ruff / mypy.
 
    ```bash
    python3 -m venv .venv && source .venv/bin/activate
-   pip install -e ".[dev]"
+   pip install -e .
    ```
 
-2. **Build a lab PCAP.** `gen-sample` writes RFC 5737 / `.example` traffic
-   covering every detection class. `--clean` is the false-positive check.
+2. **Use a committed fixture, or build a lab PCAP.**
+   `samples/fixtures/syn_scan.pcap` is a half-open scan;
+   `clean_browse.pcap` is the false-positive check;
+   `truncated.pcap` must exit 2. `gen-sample` writes a larger RFC 5737
+   / `.example` capture covering every detection class.
 
    ```bash
+   pcaplens analyse samples/fixtures/syn_scan.pcap \
+     --case-id DEMO-001 --examiner "You" --out output --no-tshark
    pcaplens gen-sample --out samples/office_lan.pcap
    pcaplens gen-sample --clean --out samples/clean.pcap
    ```
 
 3. **Triage.** `analyse` hashes the file, walks packets, writes the report
    plus CSVs, extracted HTTP objects, and a hash-chained custody log.
-
-   ```bash
-   pcaplens analyse samples/office_lan.pcap \
-     --case-id DEMO-001 --examiner "You" --out output --no-tshark
-   ```
+   `analyse --format` is `markdown` or `json`. `report --format` is
+   `markdown`, `html`, or `both` — different flag, different files.
 
 4. **Read the report.** Open `output/report.md`. Severity order is
    CRITICAL → HIGH → MEDIUM → LOW. INFO rows (TLS SNI, HTTP requests) are
    timeline context and do **not** count as “findings”. A clean capture
    prints `No suspicious activity detected by the current rules.`
 
-5. **Share HTML or JSON.** `pcaplens report` writes Markdown and/or HTML.
-   `analyse --format json` writes the versioned object in
+5. **Share HTML or JSON.** `pcaplens report` writes Markdown and/or HTML
+   into its own `--out` (it replaces that directory). `analyse --format
+   json` writes the versioned object in
    [docs/json-report.md](docs/json-report.md).
 
    ```bash
-   pcaplens report samples/office_lan.pcap --format both --out output --no-tshark
-   pcaplens analyse samples/office_lan.pcap --format json --out output-json
+   pcaplens report samples/fixtures/syn_scan.pcap --format both --out output-report --no-tshark
+   pcaplens analyse samples/fixtures/syn_scan.pcap --format json --out output-json --no-tshark
    ```
 
 6. **Tune, then re-run.** Copy `profiles/default.yaml`, change one
@@ -113,13 +123,15 @@ in a viva; do not commit real captures.
    ```
 
 Why a finding fired, why SNI is not an IOC, and how the parser fails closed
-are answered in [docs/viva.md](docs/viva.md).
+are answered in [docs/viva.md](docs/viva.md). What the tool does **not**
+detect (and known false positives / negatives) is in
+[docs/limitations.md](docs/limitations.md).
 
 ## Example output
 
 ```text
-790 packets, 6 findings, 7 IOCs -> output/report.md
-tshark --export-objects found 21 HTTP objects; this tool extracted 21
+61 packets, 1 finding, 1 IOC -> output/report.md
+tshark cross-check skipped (--no-tshark)
 ```
 
 `output/report.md` includes an executive summary, severity-ranked findings,
@@ -196,9 +208,13 @@ result = analyze_pcap("capture.pcap", out="out-json", report_format="json")
 
 ## Limitations
 
+The full list (what it does **not** detect, known false positives and
+false negatives) is [docs/limitations.md](docs/limitations.md). Short version:
+
 - Tuned for lab / teaching captures; production networks need baselining
   (software updaters also “beacon”).
 - TLS payloads stay opaque; SNI is read from ClientHello (JA3/JA4 still on the roadmap).
+  HTTP/2, QUIC, DoH/DoT, VLAN inner frames, and encrypted C2 payloads are out of scope.
 - Internal hosts are RFC 1918 IPv4 (including IPv4-mapped IPv6) and IPv6
   ULA / link-local / loopback; documentation prefixes (RFC 5737,
   `2001:db8::/32`) count as external.

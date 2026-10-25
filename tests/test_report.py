@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from pcaplens.analyze import analyze_pcap
 from pcaplens.cli import main
 from pcaplens.report import ReportData, render_html, render_markdown
 from pcaplens.synth import build_attack_pcap, build_clean_pcap
@@ -57,6 +58,7 @@ def test_cli_report_html_only(tmp_path: Path):
     )
     assert rc == 0
     assert (out / "report.html").is_file()
+    assert not (out / "report.md").exists()
     page = (out / "report.html").read_text(encoding="utf-8")
     assert "No suspicious activity detected by the current rules." in page
 
@@ -118,6 +120,23 @@ def test_render_markdown_includes_empty_sni_row():
     assert "none observed" in md
     assert "## Findings" in md
     assert "## Indicators of compromise" in md
+
+
+def test_analyze_emit_report_false_skips_report_files(tmp_path: Path):
+    pcap = build_clean_pcap(tmp_path / "c.pcap")
+    out = tmp_path / "silent"
+    result = analyze_pcap(
+        pcap,
+        out=out,
+        tshark_cross_check=False,
+        emit_report=False,
+    )
+    assert result.report_path is None
+    assert result.report_data is not None
+    assert not (out / "report.md").exists()
+    assert not (out / "report.json").exists()
+    assert (out / "events.csv").is_file()
+    assert (out / "chain_of_custody.jsonl").is_file()
 
 
 def test_cli_report_rejects_unknown_format():

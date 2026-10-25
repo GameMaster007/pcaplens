@@ -43,6 +43,31 @@ def test_e2e_clean_fixture_json_schema(tmp_path: Path):
     assert data["iocs"] == []
 
 
+def test_e2e_syn_scan_fixture_report_html(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """README quickstart: report the committed SYN-scan fixture."""
+    out = tmp_path / "output-report"
+    rc = main(
+        [
+            "report",
+            str(FIXTURES / "syn_scan.pcap"),
+            "--case-id",
+            "DEMO-001",
+            "--out",
+            str(out),
+            "--no-tshark",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert (out / "report.md").is_file()
+    assert (out / "report.html").is_file()
+    assert "finding" in captured.out
+    assert "IOC" in captured.out
+    text = (out / "report.md").read_text(encoding="utf-8")
+    assert "SYN scan" in text
+    assert "Network Forensics Report - DEMO-001" in text
+
+
 def test_e2e_syn_scan_fixture_has_finding(tmp_path: Path):
     out = tmp_path / "scan"
     rc = main(

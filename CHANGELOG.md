@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+0.2.0 is drafted below. Do not tag or publish until the stack is merged.
+
+## [0.2.0] - Draft
+
+Draft of the post-0.1.0 stack (IPv6, JSON, TLS SNI, YAML profiles, parser
+hardening, report / DNS / HTTP / SYN-scan, fuzz, FP audit, streaming,
+e2e, mypy). Package version stays `0.1.0` until a real release.
+
 ### Security
 - Stream PCAPs and enforce size/count limits so malformed or huge captures
   fail closed (clear CLI error, non-zero exit) instead of crashing or hanging.
@@ -59,10 +67,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema checker, and a CLI exit-code contract (0 / 1 / 2 / 130).
 - `mypy` on `src/pcaplens` in CI; `pcaplens --help` examples and exit
   codes; viva doc updated for streaming, FP cut-offs, and schema.
+- [docs/limitations.md](docs/limitations.md): what pcaplens does not
+  detect, and known false-positive / false-negative cases.
 
 ### Changed
 - GitHub Actions CI runs on every pull request (not only those targeting
   `main`) so stacked feature PRs get the 3.10–3.12 ruff/pytest check.
+- README quickstart uses `pip install -e .` and the committed fixtures
+  (`samples/fixtures/`). `analyse` and `report` use separate `--out`
+  directories because each run replaces its output folder.
+- `analyse --format` (markdown / json) and `report --format` (markdown /
+  html / both) are documented as different flags.
+
+### Fixed
+- `pcaplens report --format html` no longer writes a leftover `report.md`
+  (`analyze_pcap(emit_report=False)` then `write_reports`).
+- `--max-packets 0` and `--max-file-bytes 0` are usage errors (exit 2)
+  instead of being silently ignored. Limits apply when the flag is
+  present (`is not None`), not when the value is truthy.
+- `analyse` and `report` use the same singular/plural wording for
+  packets, findings, and IOCs.
+- Dead `AnalysisResult.html_path` (always `None`) removed.
+- `--no-tshark` now prints `tshark cross-check skipped (--no-tshark)`
+  instead of claiming tshark is not installed.
 
 ## [0.1.0] - 2026-10-21
 
