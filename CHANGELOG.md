@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remain a separate CRITICAL finding.
 - Port-scan / SYN-scan module: vertical port scan (existing), half-open
   SYN scan (many SYNs, few completed handshakes), and horizontal scans.
+- README usage walkthrough and [docs/viva.md](docs/viva.md) (how it
+  works / viva answers).
+
+### Changed
+- GitHub Actions CI runs on every pull request (not only those targeting
+  `main`) so stacked feature PRs get the 3.10–3.12 ruff/pytest check.
 
 ## [0.1.0] - 2026-10-21
 

@@ -15,6 +15,7 @@
 - [x] HTML report (`pcaplens report --format html`)
 - [x] HTTP analysis (user-agents, suspicious URLs, hashed downloads)
 - [x] SYN-scan / half-open and horizontal scan detector
+- [x] README usage walkthrough + viva answers (`docs/viva.md`)
 
 ## Good first issues
 
