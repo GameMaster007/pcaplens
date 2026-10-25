@@ -68,6 +68,23 @@ class _PcapBuilder:
         )
         self.add(r, t + 0.02)
 
+    def dns_nx(self, client: str, name: str, t: float) -> None:
+        """Query plus NXDOMAIN (rcode 3) — used for burst tests."""
+        sport = self.rng.randrange(30000, 60000)
+        resolver = "10.10.0.1"
+        q = (
+            ip_hdr(client, resolver)
+            / UDP(sport=sport, dport=53)
+            / DNS(id=self.rng.randrange(65535), rd=1, qd=DNSQR(qname=name))
+        )
+        self.add(q, t)
+        r = (
+            ip_hdr(resolver, client)
+            / UDP(sport=53, dport=sport)
+            / DNS(id=q[DNS].id, qr=1, rd=1, ra=1, rcode=3, qd=q[DNS].qd)
+        )
+        self.add(r, t + 0.01)
+
     def tcp_session(
         self,
         cli: str,
@@ -390,4 +407,19 @@ def build_dual_stack_pcap(path: str | Path) -> Path:
     )
     # IPv6 loopback is internal.
     b.tcp_session(LOOPBACK6, LOOPBACK6, 9, [b"hi"], [b"ok"], 30)
+    return b.write(Path(path))
+
+
+def build_dns_abuse_pcap(path: str | Path) -> Path:
+    """NXDOMAIN burst, DGA-like names, an odd long label, many subdomains."""
+    b = _PcapBuilder(seed=5353)
+    for i in range(20):
+        b.dns_nx(VICTIM, f"gone{i}.missing.example", 2.0 + i * 0.2)
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    for i in range(16):
+        label = "".join(alphabet[(i * 7 + n) % len(alphabet)] for n in range(14))
+        b.dns(VICTIM, f"{label}.dga-lab.example", "203.0.113.9", 20 + i * 0.3)
+    b.dns(VICTIM, f"{'q' * 30}.odd-label.example", "192.0.2.9", 40)
+    for i in range(10):
+        b.dns(VICTIM, f"{'a' * 22}{i}.tunnel-sign.example", "203.0.113.10", 50 + i)
     return b.write(Path(path))

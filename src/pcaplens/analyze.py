@@ -20,6 +20,7 @@ from typing import Any
 from scapy.all import DNS, DNSQR, IP, TCP, IPv6
 
 from pcaplens.custody import CustodyLog, hash_file, verify
+from pcaplens.dns_analysis import analyze_dns
 from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError, load_packets
 from pcaplens.report import ReportData, render_markdown
 from pcaplens.thresholds import Thresholds
@@ -491,6 +492,12 @@ def analyze_pcap(
         )
         findings.append(("HIGH", "DNS tunnelling / exfiltration", desc))
         ioc("domain", base, "DNS tunnelling")
+
+    extra_f, extra_e, extra_i = analyze_dns(pkts, max_name_bytes=limits.max_dns_name_bytes)
+    findings.extend(extra_f)
+    events.extend(extra_e)
+    for kind, value, context in extra_i:
+        ioc(kind, value, context)
 
     streams, first_seen = reassemble(pkts, max_stream_bytes=limits.max_stream_bytes)
     obj_n = 0

@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   informational context only — not findings or IOCs. JA3/JA4 remain out of scope.
 - `pcaplens report` writes Markdown and/or HTML reports of findings, IOCs,
   and the non-informational timeline (`--format markdown|html|both`).
+- DNS analysis module: long/odd labels, NXDOMAIN bursts, a simple DGA
+  heuristic, and many-subdomain tunnelling signs.
 
 ## [0.1.0] - 2026-10-21
 
