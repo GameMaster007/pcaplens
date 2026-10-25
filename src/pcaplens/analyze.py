@@ -17,12 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scapy.all import DNS, DNSQR, IP, TCP, IPv6
+from scapy.all import IP, TCP, IPv6
 
 from pcaplens.custody import CustodyLog, hash_file, verify
 from pcaplens.dns_analysis import analyze_dns
 from pcaplens.http_analysis import SCRIPTED_UA, analyze_http, parse_http, sniff_type
-from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError, load_packets
+from pcaplens.ingest import ingest_capture
+from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError
 from pcaplens.report import ReportData, render_markdown
 from pcaplens.scan import analyze_scans
 from pcaplens.thresholds import Thresholds
@@ -220,27 +221,6 @@ def build_json_report(
     }
 
 
-def _dns_qname(pkt: Any, max_bytes: int) -> str | None:
-    """Return a query name, or None if the DNS layer is missing / hostile."""
-    try:
-        if DNS not in pkt or pkt[DNS].qr != 0 or not pkt.haslayer(DNSQR):
-            return None
-        raw = pkt[DNSQR].qname
-        if raw is None:
-            return None
-        if isinstance(raw, bytes):
-            if len(raw) > max_bytes:
-                return None
-            name = raw.decode("ascii", errors="replace")
-        else:
-            name = str(raw)
-            if len(name) > max_bytes:
-                return None
-        return name.rstrip(".")
-    except Exception:
-        return None
-
-
 def analyze_pcap(
     pcap: str | Path,
     *,
@@ -267,7 +247,7 @@ def analyze_pcap(
         raise FileNotFoundError(f"PCAP not found: {pcap}")
     if not pcap.is_file():
         raise PcapParseError(f"PCAP path is not a regular file: {pcap}")
-    pkts = load_packets(pcap, limits)
+    view = ingest_capture(pcap, limits)
     if out.exists():
         shutil.rmtree(out)
     (out / "extracted_objects").mkdir(parents=True)
@@ -275,7 +255,7 @@ def analyze_pcap(
     log = CustodyLog(out / "chain_of_custody.jsonl", case_id, examiner)
     pre = hash_file(pcap)
     log.record("pcap_hashed_before_analysis", file=str(pcap.resolve()), **pre)
-    t0, t1 = float(pkts[0].time), float(pkts[-1].time)
+    t0, t1 = view.t0, view.t1
     events: list = []
     iocs: list = []
     findings: list = []
@@ -295,29 +275,18 @@ def analyze_pcap(
             max_messages=limits.max_http_messages,
         )
 
-    talk: Counter = Counter()
-    for p in pkts:
-        try:
-            addrs = l3_addrs(p)
-            if addrs:
-                talk[addrs] += len(p)
-        except Exception:
-            continue
+    talk = view.talk
 
-    extra_sf, extra_se, extra_si = analyze_scans(pkts, thr)
+    extra_sf, extra_se, extra_si = analyze_scans(view.tcp, thr)
     findings.extend(extra_sf)
     events.extend(extra_se)
     for kind, value, context in extra_si:
         ioc(kind, value, context)
 
     syns: dict = defaultdict(list)
-    for p in pkts:
-        try:
-            addrs = l3_addrs(p)
-            if addrs and TCP in p and p[TCP].flags == "S":
-                syns[addrs].append((float(p.time), p[TCP].dport))
-        except Exception:
-            continue
+    for e in view.tcp:
+        if e.flags == "S":
+            syns[(e.src, e.dst)].append((e.t, e.dport))
 
     conns: dict = defaultdict(list)
     for (src, dst), lst in syns.items():
@@ -350,8 +319,8 @@ def analyze_pcap(
             ioc("ip", dst, f"beacon destination port {port}")
 
     dns_by_domain: dict = defaultdict(set)
-    for p in pkts:
-        q = _dns_qname(p, limits.max_dns_name_bytes)
+    for fact in view.dns:
+        q = fact.qname
         if not q:
             continue
         labels = q.split(".")
@@ -382,14 +351,7 @@ def analyze_pcap(
             f"e.g. {sample[:60]}..."
             + (f" decoded (base32): '{decoded}...'" if decoded else "")
         )
-        first_times = []
-        for p in pkts:
-            qn = _dns_qname(p, limits.max_dns_name_bytes)
-            if qn and base in qn:
-                try:
-                    first_times.append(float(p.time))
-                except Exception:
-                    continue
+        first_times = [fact.t for fact in view.dns if fact.qname and base in fact.qname]
         first = min(first_times) if first_times else t0
         event(
             first,
@@ -401,13 +363,15 @@ def analyze_pcap(
         findings.append(("HIGH", "DNS tunnelling / exfiltration", desc))
         ioc("domain", base, "DNS tunnelling")
 
-    extra_f, extra_e, extra_i = analyze_dns(pkts, max_name_bytes=limits.max_dns_name_bytes)
+    extra_f, extra_e, extra_i = analyze_dns(
+        view.dns, max_name_bytes=limits.max_dns_name_bytes
+    )
     findings.extend(extra_f)
     events.extend(extra_e)
     for kind, value, context in extra_i:
         ioc(kind, value, context)
 
-    streams, first_seen = reassemble(pkts, max_stream_bytes=limits.max_stream_bytes)
+    streams, first_seen = view.streams, view.first_seen
     obj_n = 0
     # Reconnects share a dest; SNI rows ignore the client port (sport).
     seen_sni: set[tuple[str, str, int, str]] = set()
@@ -564,7 +528,7 @@ def analyze_pcap(
 
     log.record(
         "analysis_complete",
-        packets=len(pkts),
+        packets=view.packet_count,
         streams=len(streams),
         objects=obj_n,
         findings=len(findings),
@@ -615,7 +579,7 @@ def analyze_pcap(
         pcap_bytes=pcap.stat().st_size,
         sha256=pre["sha256"],
         unchanged=unchanged,
-        packets=len(pkts),
+        packets=view.packet_count,
         t0=t0,
         t1=t1,
         custody=chain,
@@ -654,7 +618,7 @@ def analyze_pcap(
         raise _unsupported_report_format(report_format)
 
     return AnalysisResult(
-        packets=len(pkts),
+        packets=view.packet_count,
         findings=findings,
         iocs=iocs,
         events=events,

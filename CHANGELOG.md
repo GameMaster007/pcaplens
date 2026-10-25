@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CDNs, streaming). DGA needs 20 unique labels; tunnelling signs need
   16 subdomains with a 24-char prefix. Horizontal scans ignore completed
   HTTPS browsing (web ports 80/443/8080/8443).
+- Streaming ingest: one pass over the file, compact TCP/DNS facts, Scapy
+  packets dropped. `--max-packets` / `--max-file-bytes` override the
+  fail-closed limits. A 1M-packet synthetic capture is streamed in CI.
 
 ### Changed
 - GitHub Actions CI runs on every pull request (not only those targeting

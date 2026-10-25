@@ -6,6 +6,7 @@ from typing import Any
 
 from scapy.all import IP, TCP, IPv6
 
+from pcaplens.ingest import TcpEvent
 from pcaplens.thresholds import Thresholds
 
 # Cut-offs kept here so YAML profiles stay backward-compatible.
@@ -31,6 +32,27 @@ def _tcp_flag_str(pkt: Any) -> str:
         return str(pkt[TCP].flags)
     except Exception:
         return ""
+
+
+def _tcp_row(item: Any) -> tuple[float, str, str, int, int, str] | None:
+    """Normalise a Scapy packet or a compact TcpEvent."""
+    if isinstance(item, TcpEvent):
+        return item.t, item.src, item.dst, item.sport, item.dport, item.flags
+    try:
+        addrs = _l3_addrs(item)
+        if not addrs or TCP not in item:
+            return None
+        src, dst = addrs
+        return (
+            float(item.time),
+            src,
+            dst,
+            int(item[TCP].sport),
+            int(item[TCP].dport),
+            _tcp_flag_str(item),
+        )
+    except Exception:
+        return None
 
 
 def analyze_scans(
@@ -63,18 +85,15 @@ def analyze_scans(
     dests_by_src: dict[str, set[str]] = defaultdict(set)
     ports_by_src: dict[str, set[int]] = defaultdict(set)
     first_syn: dict[str, float] = {}
+    sa_ports: dict[tuple[str, str], set[int]] = defaultdict(set)
 
     for p in pkts:
-        try:
-            addrs = _l3_addrs(p)
-            if not addrs or TCP not in p:
-                continue
-            src, dst = addrs
-            flags = _tcp_flag_str(p)
-            t = float(p.time)
-            dport = int(p[TCP].dport)
-        except Exception:
+        row = _tcp_row(p)
+        if row is None:
             continue
+        t, src, dst, sport, dport, flags = row
+        if flags == "SA":
+            sa_ports[(src, dst)].add(sport)
         if flags == "S":
             syns[(src, dst)].append((t, dport))
             syn_count[src] += 1
@@ -96,15 +115,7 @@ def analyze_scans(
                 if lst[i][0] <= t <= lst[i][0] + thr.SCAN_WINDOW
             }
             if len(window) >= thr.SCAN_PORTS:
-                open_ports = sorted(
-                    {
-                        p[TCP].sport
-                        for p in pkts
-                        if TCP in p
-                        and _tcp_flag_str(p) == "SA"
-                        and _l3_addrs(p) == (dst, src)
-                    }
-                )
+                open_ports = sorted(sa_ports.get((dst, src), set()))
                 desc = (
                     f"{src} probed {len(window)} ports on {dst} "
                     f"in <= {thr.SCAN_WINDOW}s (open: {open_ports})"
