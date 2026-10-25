@@ -60,6 +60,61 @@ pcaplens verify-custody output/chain_of_custody.jsonl
 Optional: install [Wireshark](https://www.wireshark.org/)'s `tshark` for an
 independent HTTP-object count cross-check (`--no-tshark` to skip).
 
+## Usage walkthrough
+
+A 5-minute path from clone to a defendable report. Use the synthetic sample
+in a viva; do not commit real captures.
+
+1. **Install** (Python 3.10–3.12). Runtime deps are Scapy and PyYAML only.
+
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -e ".[dev]"
+   ```
+
+2. **Build a lab PCAP.** `gen-sample` writes RFC 5737 / `.example` traffic
+   covering every detection class. `--clean` is the false-positive check.
+
+   ```bash
+   pcaplens gen-sample --out samples/office_lan.pcap
+   pcaplens gen-sample --clean --out samples/clean.pcap
+   ```
+
+3. **Triage.** `analyse` hashes the file, walks packets, writes the report
+   plus CSVs, extracted HTTP objects, and a hash-chained custody log.
+
+   ```bash
+   pcaplens analyse samples/office_lan.pcap \
+     --case-id DEMO-001 --examiner "You" --out output --no-tshark
+   ```
+
+4. **Read the report.** Open `output/report.md`. Severity order is
+   CRITICAL → HIGH → MEDIUM → LOW. INFO rows (TLS SNI, HTTP requests) are
+   timeline context and do **not** count as “findings”. A clean capture
+   prints `No suspicious activity detected by the current rules.`
+
+5. **Share HTML or JSON.** `pcaplens report` writes Markdown and/or HTML.
+   `analyse --format json` writes the versioned object in
+   [docs/json-report.md](docs/json-report.md).
+
+   ```bash
+   pcaplens report samples/office_lan.pcap --format both --out output --no-tshark
+   pcaplens analyse samples/office_lan.pcap --format json --out output-json
+   ```
+
+6. **Tune, then re-run.** Copy `profiles/default.yaml`, change one
+   threshold, pass `--profile lab.yaml`. Unknown keys and non-positive
+   counts are rejected (`yaml.safe_load` only).
+
+7. **Prove the file did not change.**
+
+   ```bash
+   pcaplens verify-custody output/chain_of_custody.jsonl
+   ```
+
+Why a finding fired, why SNI is not an IOC, and how the parser fails closed
+are answered in [docs/viva.md](docs/viva.md).
+
 ## Example output
 
 ```text
