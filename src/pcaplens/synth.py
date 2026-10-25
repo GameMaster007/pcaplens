@@ -448,6 +448,58 @@ def build_horizontal_scan_pcap(path: str | Path) -> Path:
     return b.write(Path(path))
 
 
+def build_update_pcap(path: str | Path) -> Path:
+    """Windows-Update-style CDN names and completed HTTPS — must stay clean."""
+    b = _PcapBuilder(seed=9001)
+    # Cloudfront-like labels: high-ish entropy, but fewer than DGA_UNIQUE.
+    for i in range(12):
+        label = f"d{i:02d}{('ab12cd34ef' * 2)[i : i + 8]}"
+        name = f"{label}.cloudfront.example"
+        ip = f"192.0.2.{40 + i}"
+        b.dns(VICTIM, name, ip, 2.0 + i * 0.4)
+        b.http_get(
+            VICTIM, ip, name, f"/c/msdownload/update/{i}/kb{i}.cab",
+            b"<html>update catalog</html>",
+            "text/html",
+            2.2 + i * 0.4,
+        )
+        b.tcp_session(VICTIM, ip, 443, [build_client_hello(name)], [b""], 2.5 + i * 0.4)
+    return b.write(Path(path))
+
+
+def build_streaming_pcap(path: str | Path) -> Path:
+    """Many completed 443 sessions (video CDN) — not a horizontal scan."""
+    b = _PcapBuilder(seed=9002)
+    for i in range(20):
+        ip = f"192.0.2.{80 + i}"
+        host = f"media-{i}.cdn.example"
+        b.dns(VICTIM, host, ip, 1.0 + i * 0.2)
+        b.tcp_session(
+            VICTIM, ip, 443, [build_client_hello(host)], [b""], 1.1 + i * 0.2
+        )
+        body = b"\xff\xd8\xff" + bytes(b.rng.randrange(256) for _ in range(80))
+        b.http_get(VICTIM, ip, host, f"/hls/seg{i}.ts", body, "image/jpeg", 1.3 + i * 0.2)
+    return b.write(Path(path))
+
+
+def build_benign_dns_pcap(path: str | Path) -> Path:
+    """Ordinary office DNS plus a handful of NXDOMAIN — below burst cut-off."""
+    b = _PcapBuilder(seed=9003)
+    names = [
+        ("intranet.corp.example", "10.10.0.10"),
+        ("mail.corp.example", "10.10.0.11"),
+        ("news.example", "192.0.2.80"),
+        ("weather.example", "192.0.2.81"),
+        ("docs.example", "192.0.2.82"),
+        ("cdn.example", "192.0.2.83"),
+    ]
+    for i, (name, ip) in enumerate(names):
+        b.dns(VICTIM, name, ip, 1.0 + i)
+    for i in range(5):
+        b.dns_nx(VICTIM, f"missing{i}.corp.example", 20.0 + i)
+    return b.write(Path(path))
+
+
 def build_http_abuse_pcap(path: str | Path) -> Path:
     """Scripted UAs, a suspicious path, and a hashed non-executable download."""
     b = _PcapBuilder(seed=8080)
@@ -482,10 +534,10 @@ def build_dns_abuse_pcap(path: str | Path) -> Path:
     for i in range(20):
         b.dns_nx(VICTIM, f"gone{i}.missing.example", 2.0 + i * 0.2)
     alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-    for i in range(16):
+    for i in range(22):
         label = "".join(alphabet[(i * 7 + n) % len(alphabet)] for n in range(14))
         b.dns(VICTIM, f"{label}.dga-lab.example", "203.0.113.9", 20 + i * 0.3)
     b.dns(VICTIM, f"{'q' * 30}.odd-label.example", "192.0.2.9", 40)
-    for i in range(10):
-        b.dns(VICTIM, f"{'a' * 22}{i}.tunnel-sign.example", "203.0.113.10", 50 + i)
+    for i in range(18):
+        b.dns(VICTIM, f"{'a' * 24}{i}.tunnel-sign.example", "203.0.113.10", 50 + i)
     return b.write(Path(path))

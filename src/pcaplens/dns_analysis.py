@@ -8,13 +8,16 @@ from typing import Any
 from scapy.all import DNS, IP, UDP, IPv6
 
 # Cut-offs kept here so YAML profiles stay backward-compatible.
+# Tuned against benign CDN / Windows-Update / browsing captures:
+# 20 unique labels (CDNs rarely mint that many *new* high-entropy names
+# in one short capture); length 12 / 3.5 bits matches the YAML DNS_* pair.
 NXDOMAIN_COUNT = 15
 NXDOMAIN_WINDOW = 10.0
-DGA_UNIQUE = 12
-DGA_LABEL_LEN = 10
-DGA_ENTROPY = 3.3
+DGA_UNIQUE = 20
+DGA_LABEL_LEN = 12
+DGA_ENTROPY = 3.5
 ODD_LABEL_LEN = 25
-TUNNEL_UNIQUE = 8
+TUNNEL_UNIQUE = 16
 
 
 def _entropy(s: str) -> float:
@@ -172,7 +175,7 @@ def analyze_dns(
             continue
         # Many unique subdomains of one base is a tunnelling / staging sign
         # even when no single label hits the 40-char threshold.
-        if any(len(n.split(".")[0]) >= 20 for n in names):
+        if any(len(n.split(".")[0]) >= 24 for n in names):
             sample = sorted(names, key=len)[-1]
             desc = (
                 f"{len(names)} unique sub-domains of {base} "

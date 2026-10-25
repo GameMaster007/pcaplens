@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   works / viva answers).
 - Seeded parser fuzz (classic PCAP, PCAPng, SLL/SLL2, DNS, HTTP, TLS)
   plus a record-walk cap so a hostile TLS stream cannot loop forever.
+- False-positive audit captures (browsing, office DNS, software-update
+  CDNs, streaming). DGA needs 20 unique labels; tunnelling signs need
+  16 subdomains with a 24-char prefix. Horizontal scans ignore completed
+  HTTPS browsing (web ports 80/443/8080/8443).
 
 ### Changed
 - GitHub Actions CI runs on every pull request (not only those targeting

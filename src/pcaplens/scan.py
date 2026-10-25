@@ -9,10 +9,13 @@ from scapy.all import IP, TCP, IPv6
 from pcaplens.thresholds import Thresholds
 
 # Cut-offs kept here so YAML profiles stay backward-compatible.
+# Horizontal scan must not fire on ordinary HTTPS browsing (many hosts,
+# ports {80,443}). Require a non-web port set *or* a half-open ratio.
 SYN_SCAN_MIN = 20
 SYN_SCAN_COMPLETE_RATIO = 0.20
 HORIZONTAL_HOSTS = 15
 HORIZONTAL_MAX_PORTS = 3
+_WEB_PORTS = frozenset({80, 443, 8080, 8443})
 
 
 def _l3_addrs(pkt: Any) -> tuple[str, str] | None:
@@ -141,6 +144,11 @@ def analyze_scans(
     for src, dests in dests_by_src.items():
         ports = ports_by_src[src]
         if len(dests) < HORIZONTAL_HOSTS or len(ports) > HORIZONTAL_MAX_PORTS:
+            continue
+        n_syn = syn_count[src]
+        complete_ratio = (client_ack[src] / n_syn) if n_syn else 1.0
+        web_only = bool(ports) and ports <= _WEB_PORTS
+        if web_only and complete_ratio > SYN_SCAN_COMPLETE_RATIO:
             continue
         desc = (
             f"{src} probed {len(dests)} hosts on {len(ports)} port(s) "
