@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SYN scan (many SYNs, few completed handshakes), and horizontal scans.
 - README usage walkthrough and [docs/viva.md](docs/viva.md) (how it
   works / viva answers).
+- Seeded parser fuzz (classic PCAP, PCAPng, SLL/SLL2, DNS, HTTP, TLS)
+  plus a record-walk cap so a hostile TLS stream cannot loop forever.
 
 ### Changed
 - GitHub Actions CI runs on every pull request (not only those targeting
