@@ -130,7 +130,7 @@ class _PcapBuilder:
         )
         self.add(
             ip_hdr(cli, srv)
-            / TCP(sport=dport, dport=sport, flags="A", seq=cseq + 1, ack=sseq + 1),
+            / TCP(sport=sport, dport=dport, flags="A", seq=cseq + 1, ack=sseq + 1),
             t + 0.02,
         )
         return t

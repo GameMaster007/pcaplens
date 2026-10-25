@@ -140,7 +140,8 @@ result = analyze_pcap("capture.pcap", out="out-json", report_format="json")
 - Internal hosts are RFC 1918 IPv4 (including IPv4-mapped IPv6) and IPv6
   ULA / link-local / loopback; documentation prefixes (RFC 5737,
   `2001:db8::/32`) count as external.
-- TCP reassembly is best-effort (seq map); not a full Wireshark replacement.
+- TCP reassembly is best-effort (seq map; retransmits are ignored); not a
+  full Wireshark replacement.
 - Not an accredited forensic method under the UK Forensic Science Regulator Code.
 
 ## Ethics & legal

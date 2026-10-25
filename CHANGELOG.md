@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Stream PCAPs and enforce size/count limits so malformed or huge captures
+  fail closed (clear CLI error, non-zero exit) instead of crashing or hanging.
+- Harden DNS/HTTP/TCP-reassembly parsers against bogus lengths; add a
+  synthetic malformed-PCAP corpus and a small fuzz-style test.
+- Validate PCAPng block Total Length against remaining file bytes (a 120-byte
+  file that claims a 2.1 GiB block is rejected without allocating).
+- Packet-size limits use captured length, not on-wire `orig_len` / `wirelen`.
+- TCP reassembly counts unique sequence numbers only, so retransmits do not
+  exhaust the stream-size cap.
+- Decode Linux cooked captures (`LINKTYPE_LINUX_SLL` / `SLL2`, `tcpdump -i any`)
+  and DLT_RAW IPv6.
+
 ### Added
 - `is_internal` now covers IPv4 RFC 1918 and IPv6 RFC 4193 ULA (`fc00::/7`),
   link-local (`fe80::/10`), and loopback (`::1`). RFC 5737 / `2001:db8::/32`
