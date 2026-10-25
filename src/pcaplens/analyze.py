@@ -21,6 +21,7 @@ from scapy.all import DNS, DNSQR, IP, TCP, IPv6
 
 from pcaplens.custody import CustodyLog, hash_file, verify
 from pcaplens.dns_analysis import analyze_dns
+from pcaplens.http_analysis import SCRIPTED_UA, analyze_http, parse_http, sniff_type
 from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError, load_packets
 from pcaplens.report import ReportData, render_markdown
 from pcaplens.thresholds import Thresholds
@@ -58,9 +59,6 @@ INTERNAL_NETWORKS = [
         "::1/128",
     )
 ]
-SCRIPTED_UA = re.compile(
-    r"python-requests|curl/|wget/|powershell|go-http-client", re.I
-)
 
 
 def format_ts(t: float) -> str:
@@ -104,25 +102,6 @@ def entropy(s: str) -> float:
     )
 
 
-def sniff_type(data: bytes) -> str:
-    for magic, name in (
-        (b"MZ", "windows-executable"),
-        (b"\x7fELF", "elf-executable"),
-        (b"%PDF", "pdf"),
-        (b"PK\x03\x04", "zip/office"),
-        (b"\xff\xd8\xff", "jpeg"),
-        (b"<html", "html"),
-        (b"<!doctype", "html"),
-    ):
-        if data[: len(magic)].lower() == magic.lower():
-            return name
-    try:
-        data[:512].decode("ascii")
-        return "text"
-    except UnicodeDecodeError:
-        return "binary"
-
-
 def reassemble(
     pkts: Any, max_stream_bytes: int = DEFAULT_LIMITS.max_stream_bytes
 ) -> tuple[dict, dict]:
@@ -154,51 +133,6 @@ def reassemble(
         {k: b"".join(v[s] for s in sorted(v)) for k, v in streams.items()},
         first_seen,
     )
-
-
-def parse_http(
-    data: bytes,
-    *,
-    max_body: int = DEFAULT_LIMITS.max_http_body_bytes,
-    max_header: int = DEFAULT_LIMITS.max_http_header_bytes,
-    max_messages: int = DEFAULT_LIMITS.max_http_messages,
-) -> list[tuple[str, dict[str, str], bytes]]:
-    """Split a byte string into HTTP messages. Never raises on bad input."""
-    msgs: list = []
-    i = 0
-    while i < len(data) and len(msgs) < max_messages:
-        end = data.find(b"\r\n\r\n", i)
-        if end < 0:
-            break
-        if end - i > max_header:
-            break
-        head = data[i:end].decode("latin-1").split("\r\n")
-        headers = {
-            k.strip().lower(): v.strip()
-            for k, _, v in (h.partition(":") for h in head[1:])
-            if k.strip()
-        }
-        raw_len = headers.get("content-length", "0") or "0"
-        # A 64 KiB string of digits would become a huge int. Real Content-Length
-        # values fit in 16 digits (up to a petabyte).
-        if len(raw_len) > 16:
-            length = 0
-        else:
-            try:
-                length = int(raw_len)
-            except ValueError:
-                length = 0
-        if length < 0:
-            length = 0
-        available = len(data) - (end + 4)
-        length = min(length, max_body, max(available, 0))
-        body = data[end + 4 : end + 4 + length]
-        msgs.append((head[0] if head else "", headers, body))
-        nxt = end + 4 + length
-        if nxt <= i:
-            break
-        i = nxt
-    return msgs
 
 
 def summarize_findings(findings: list[tuple[str, str, str]]) -> str:
@@ -641,6 +575,18 @@ def analyze_pcap(
                         out / "extracted_objects" / "objects.sha256", "a"
                     ) as fh:
                         fh.write(f"{sha}  {fname}  ({kind}, from {host}{uri})\n")
+
+    extra_hf, extra_he, extra_hi = analyze_http(
+        streams,
+        first_seen,
+        max_body=limits.max_http_body_bytes,
+        max_header=limits.max_http_header_bytes,
+        max_messages=limits.max_http_messages,
+    )
+    findings.extend(extra_hf)
+    events.extend(extra_he)
+    for kind, value, context in extra_hi:
+        ioc(kind, value, context)
 
     log.record(
         "analysis_complete",

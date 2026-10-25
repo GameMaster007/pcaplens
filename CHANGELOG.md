@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the non-informational timeline (`--format markdown|html|both`).
 - DNS analysis module: long/odd labels, NXDOMAIN bursts, a simple DGA
   heuristic, and many-subdomain tunnelling signs.
+- HTTP analysis module: scripted user-agents, suspicious URLs, and
+  hashed file downloads (non-executable types). Executable downloads
+  remain a separate CRITICAL finding.
 
 ## [0.1.0] - 2026-10-21
 

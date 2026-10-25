@@ -13,6 +13,7 @@
 - [ ] Optional Zeek/Suricata log ingest for correlation
 - [x] Configurable threshold profiles (YAML)
 - [x] HTML report (`pcaplens report --format html`)
+- [x] HTTP analysis (user-agents, suspicious URLs, hashed downloads)
 
 ## Good first issues
 
