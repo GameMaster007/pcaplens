@@ -9,6 +9,7 @@ Every finding is mapped to [MITRE ATT&CK](https://attack.mitre.org/).
 ```bash
 pip install pcaplens          # once published
 pcaplens analyse capture.pcap --case-id INC-42 --out ./out
+pcaplens analyse capture.pcap --profile profiles/default.yaml --out ./out
 ```
 
 > **Authorised use only.** Analyse traffic you own or have explicit permission
@@ -65,7 +66,9 @@ ATT&CK-mapped timeline, IOC table, and top talkers. Also written:
 ## How detections work (thresholds)
 
 Constants live in `pcaplens.thresholds` and are intentionally simple so you can
-defend them in a viva or tune them on a clean baseline:
+defend them in a viva or tune them on a clean baseline. Override them with
+`--profile lab.yaml` (see `profiles/default.yaml` for the built-in values).
+Unknown keys, wrong types, empty files, and zero/negative counts are rejected:
 
 | Constant | Default | Meaning |
 |----------|---------|---------|
@@ -81,9 +84,16 @@ otherwise metronomic beacon (a plain stdev/mean test would).
 ## Library API
 
 ```python
-from pcaplens import analyze_pcap
+from pcaplens import analyze_pcap, load_profile
 
+# built-in defaults
 result = analyze_pcap("capture.pcap", case_id="INC-1", out="out")
+# or override from a YAML profile
+result = analyze_pcap(
+    "capture.pcap",
+    thresholds=load_profile("lab.yaml"),
+    out="out",
+)
 print(len(result.findings), result.sha256)
 ```
 

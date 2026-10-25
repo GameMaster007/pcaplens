@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documentation addresses stay external. IPv4-mapped IPv6 (`::ffff:10.0.0.1`)
   follows the embedded IPv4 rules; `%zone` suffixes are ignored. Dual-stack
   synthetic capture in tests.
+- `--profile path.yaml` loads detection thresholds (scan, beacon, DNS, exfil)
+  from a YAML file. Built-in defaults are unchanged; `profiles/default.yaml`
+  matches them exactly. Unknown keys, wrong types, empty/null files, missing
+  paths, nested mappings, and zero/negative counts raise a clear
+  `invalid profile …` error. Parsing uses `yaml.safe_load` only.
 
 ## [0.1.0] - 2026-10-21
 
