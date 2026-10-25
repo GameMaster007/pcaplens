@@ -20,7 +20,7 @@ from typing import Any
 from scapy.all import DNS, DNSQR, IP, TCP, IPv6
 
 from pcaplens.custody import CustodyLog, hash_file, verify
-from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, load_packets
+from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError, load_packets
 from pcaplens.thresholds import Thresholds
 from pcaplens.tls import extract_sni
 
@@ -324,8 +324,10 @@ def analyze_pcap(
     # None means "use built-in defaults" so existing callers stay unchanged.
     # Named thr (not t) so it does not collide with packet timestamps.
     thr = thresholds if thresholds is not None else Thresholds()
-    if not pcap.is_file():
+    if not pcap.exists():
         raise FileNotFoundError(f"PCAP not found: {pcap}")
+    if not pcap.is_file():
+        raise PcapParseError(f"PCAP path is not a regular file: {pcap}")
     pkts = load_packets(pcap, limits)
     if out.exists():
         shutil.rmtree(out)

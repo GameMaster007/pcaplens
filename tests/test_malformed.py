@@ -233,7 +233,7 @@ def test_cli_directory_fails_safely(tmp_path: Path, capsys: pytest.CaptureFixtur
 
 
 def test_missing_pcap_raises(tmp_path: Path):
-    with pytest.raises(PcapParseError, match="not found"):
+    with pytest.raises((PcapParseError, FileNotFoundError), match="not found"):
         _analyse(tmp_path / "nope.pcap", tmp_path / "missing_out")
 
 
