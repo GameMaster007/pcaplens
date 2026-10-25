@@ -135,10 +135,40 @@ fixtures.
 runs before `report.json` is written. Schema 1.0 keys are required;
 unknown keys fail.
 
+## What it does not detect (honest answers)
+
+The full list is [docs/limitations.md](limitations.md). Short version
+you can say out loud:
+
+**“Will this catch HTTPS malware?”** Only if it also reconnects on a
+regular interval (beacon rule) or you already care about the SNI.
+Payloads stay opaque. Encrypted Client Hello yields no hostname.
+JA3/JA4 is still a roadmap item.
+
+**“Will a Windows Update look like DGA or a scan?”** The software-update
+and streaming fixtures stay clean: DGA needs 20 unique high-entropy
+labels; horizontal scan skips completed 80/443 browsing. A noisier CDN
+can still trip DGA. That is a known false-positive case, not a surprise.
+
+**“Can a slow scan hide?”** Yes. Fewer than 50 SYN dports in 60s, or a
+connect-scan with more than 20% completed handshakes, will not fire.
+UDP and ICMP scans are out of scope.
+
+**“What about DoH, HTTP/2, QUIC, VLAN, GRE?”** Not parsed. DoH looks
+like HTTPS. HTTP/2 and QUIC downloads will not produce an
+executable-download finding. VLAN-tagged and tunneled frames may never
+expose the inner IP.
+
+**“Is a clean report a clean network?”** No. It means no current rule
+fired. Thresholds, stream caps (8 MiB), and the 250 000-packet default
+all hide traffic. Findings are leads.
+
 ## What I would say if asked “is this production-ready?”
 
 It is sized for lab / teaching captures and a viva. Production networks
 need a clean baseline (software updaters look like beacons). TLS
 payloads stay opaque (SNI only; JA3/JA4 is still a roadmap item).
-TCP reassembly is a seq map, not a full stream engine. Findings are
+TCP reassembly is a seq map, not a full stream engine. It does not
+detect HTTP/2, QUIC, DoH/DoT, VLAN inner frames, or encrypted C2
+payloads — see [docs/limitations.md](limitations.md). Findings are
 hypotheses for an analyst, not automatic containment.

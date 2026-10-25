@@ -169,7 +169,6 @@ class AnalysisResult:
     events: list[tuple] = field(default_factory=list)
     tls_sni: list[tuple[str, str, int, str]] = field(default_factory=list)
     report_path: Path | None = None
-    html_path: Path | None = None
     sha256: str = ""
     unchanged: bool = True
     cross_check: str = ""
@@ -229,11 +228,18 @@ def analyze_pcap(
     thresholds: Thresholds | None = None,
     report_format: str = "markdown",
     limits: ParseLimits | None = None,
+    emit_report: bool = True,
 ) -> AnalysisResult:
-    """Analyse a PCAP offline; write report, CSVs, objects, custody log."""
+    """Analyse a PCAP offline; write report, CSVs, objects, custody log.
+
+    ``emit_report=False`` still writes CSVs, extracted objects, and the
+    custody log, but skips ``report.md`` / ``report.json``. ``pcaplens
+    report`` uses that so ``--format html`` does not leave a leftover
+    Markdown file.
+    """
     # Fail before deleting --out so a typo or a missing PCAP cannot
     # wipe a previous run.
-    if report_format not in REPORT_FORMATS:
+    if emit_report and report_format not in REPORT_FORMATS:
         raise _unsupported_report_format(report_format)
     limits = limits or DEFAULT_LIMITS
     pcap = Path(pcap)
@@ -532,8 +538,9 @@ def analyze_pcap(
         findings=len(findings),
     )
 
-    cross = "tshark not installed - skipped"
-    if tshark_cross_check and shutil.which("tshark"):
+    if not tshark_cross_check:
+        cross = "tshark cross-check skipped (--no-tshark)"
+    elif shutil.which("tshark"):
         tdir = out / "tshark_export"
         subprocess.run(
             ["tshark", "-r", str(pcap), "-q", "--export-objects", f"http,{tdir}"],
@@ -546,6 +553,8 @@ def analyze_pcap(
             f"this tool extracted {obj_n}"
         )
         shutil.rmtree(tdir, ignore_errors=True)
+    else:
+        cross = "tshark not installed - skipped"
     log.record("tool_cross_check", result=cross)
 
     post = hash_file(pcap)
@@ -591,30 +600,32 @@ def analyze_pcap(
     )
 
     # CSVs and the custody log are already on disk. Only the report
-    # filename changes: report.json vs report.md.
-    html_path = None
-    if report_format == "json":
-        report_path = out / "report.json"
-        payload = build_json_report(
-            case_id=case_id,
-            findings=findings,
-            iocs=iocs,
-            custody_ok=custody_ok,
-            custody_summary=chain,
-            custody_entries=custody_entries,
-            pcap_unchanged=unchanged,
-            sha256=pre["sha256"],
-        )
-        validate_json_report(payload)
-        report_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    elif report_format == "markdown":
-        report_path = out / "report.md"
-        report_path.write_text(render_markdown(report_data), encoding="utf-8")
-    else:
-        raise _unsupported_report_format(report_format)
+    # filename changes: report.json vs report.md. emit_report=False
+    # leaves that to write_reports (markdown / html / both).
+    report_path = None
+    if emit_report:
+        if report_format == "json":
+            report_path = out / "report.json"
+            payload = build_json_report(
+                case_id=case_id,
+                findings=findings,
+                iocs=iocs,
+                custody_ok=custody_ok,
+                custody_summary=chain,
+                custody_entries=custody_entries,
+                pcap_unchanged=unchanged,
+                sha256=pre["sha256"],
+            )
+            validate_json_report(payload)
+            report_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        elif report_format == "markdown":
+            report_path = out / "report.md"
+            report_path.write_text(render_markdown(report_data), encoding="utf-8")
+        else:
+            raise _unsupported_report_format(report_format)
 
     return AnalysisResult(
         packets=view.packet_count,
@@ -623,7 +634,6 @@ def analyze_pcap(
         events=events,
         tls_sni=sorted(seen_sni),
         report_path=report_path,
-        html_path=html_path,
         sha256=pre["sha256"],
         unchanged=unchanged,
         cross_check=cross,

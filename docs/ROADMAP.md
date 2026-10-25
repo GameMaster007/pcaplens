@@ -17,6 +17,7 @@
 - [x] SYN-scan / half-open and horizontal scan detector
 - [x] README usage walkthrough + viva answers (`docs/viva.md`)
 - [x] Parser fuzz, false-positive audit, streaming ingest, e2e contract, mypy
+- [x] `docs/limitations.md` (what it does not detect, known FP/FN)
 
 ## Good first issues
 
