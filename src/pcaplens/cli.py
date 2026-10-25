@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from pcaplens import __version__
-from pcaplens.analyze import analyze_pcap
+from pcaplens.analyze import REPORT_FORMATS, analyze_pcap
 from pcaplens.custody import verify as verify_custody
 from pcaplens.synth import build_attack_pcap, build_clean_pcap
 from pcaplens.thresholds import ProfileError, Thresholds, load_profile
@@ -21,14 +21,20 @@ def _profile_arg(value: str) -> Thresholds:
 
 
 def cmd_analyse(args: argparse.Namespace) -> int:
-    result = analyze_pcap(
-        args.pcap,
-        case_id=args.case_id,
-        examiner=args.examiner,
-        out=args.out,
-        tshark_cross_check=not args.no_tshark,
-        thresholds=args.thresholds,
-    )
+    try:
+        result = analyze_pcap(
+            args.pcap,
+            case_id=args.case_id,
+            examiner=args.examiner,
+            out=args.out,
+            tshark_cross_check=not args.no_tshark,
+            thresholds=args.thresholds,
+            report_format=args.report_format,
+        )
+    except (ValueError, OSError) as exc:
+        # Empty captures, a bad report_format, or a missing PCAP.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     print(
         f"{result.packets} packets, {len(result.findings)} findings, "
         f"{len(result.iocs)} IOCs -> {result.report_path}"
@@ -71,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--case-id", default="CASE-001", help="Case identifier for the report")
     a.add_argument("--examiner", default=None, help="Examiner name for custody log")
     a.add_argument("--out", type=Path, default=Path("output"), help="Output directory")
+    # dest avoids clobbering the builtin name `format`.
+    a.add_argument(
+        "--format",
+        dest="report_format",
+        choices=REPORT_FORMATS,
+        default="markdown",
+        help="Report format (markdown is the default; json writes report.json)",
+    )
     a.add_argument(
         "--no-tshark",
         action="store_true",

@@ -5,6 +5,7 @@ import base64
 import csv
 import hashlib
 import ipaddress
+import json
 import math
 import re
 import shutil
@@ -20,6 +21,21 @@ from scapy.all import DNS, DNSQR, IP, TCP, IPv6, rdpcap
 
 from pcaplens.custody import CustodyLog, hash_file, verify
 from pcaplens.thresholds import Thresholds
+
+# Bump this string when the --format json object shape changes in a
+# breaking way (renamed, removed, or retyped fields). It is a string,
+# not a number, so "1.0" and "1.10" stay distinct.
+JSON_SCHEMA_VERSION = "1.0"
+
+# Values --format / report_format accept. markdown stays the default so
+# existing scripts keep writing report.md.
+REPORT_FORMATS = ("markdown", "json")
+
+
+def _unsupported_report_format(report_format: str) -> ValueError:
+    allowed = " or ".join(repr(item) for item in REPORT_FORMATS)
+    return ValueError(f"unsupported report format {report_format!r}; use {allowed}")
+
 
 # Site/local prefixes for internal vs external (exfil) classification.
 # IPv4: RFC 1918 only. Do not use ipaddress.is_private — it treats RFC 5737
@@ -178,6 +194,47 @@ class AnalysisResult:
     cross_check: str = ""
 
 
+def build_json_report(
+    *,
+    case_id: str,
+    findings: list[tuple[str, str, str]],
+    iocs: list[tuple[str, str, str]],
+    custody_ok: bool,
+    custody_summary: str,
+    custody_entries: int,
+    pcap_unchanged: bool,
+    sha256: str,
+) -> dict[str, Any]:
+    """Build the versioned JSON report written by --format json.
+
+    The object always has the same top-level keys so a parser can rely
+    on them: schema_version, case_id, findings, iocs, custody.
+    findings and iocs may be empty lists (a clean capture).
+    """
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "case_id": case_id,
+        # Each finding is the same (severity, title, detail) tuple the
+        # Markdown table uses, just as an object instead of a row.
+        "findings": [
+            {"severity": severity, "title": title, "detail": detail}
+            for severity, title, detail in findings
+        ],
+        # Same (type, value, context) rows as iocs.csv.
+        "iocs": [
+            {"type": kind, "value": value, "context": context}
+            for kind, value, context in iocs
+        ],
+        "custody": {
+            "summary": custody_summary,
+            "intact": custody_ok,
+            "entries": custody_entries,
+            "pcap_unchanged": pcap_unchanged,
+            "sha256": sha256,
+        },
+    }
+
+
 def analyze_pcap(
     pcap: str | Path,
     *,
@@ -186,13 +243,20 @@ def analyze_pcap(
     out: str | Path = "output",
     tshark_cross_check: bool = True,
     thresholds: Thresholds | None = None,
+    report_format: str = "markdown",
 ) -> AnalysisResult:
-    """Analyse a PCAP offline; write report.md, CSVs, objects, custody log."""
+    """Analyse a PCAP offline; write report, CSVs, objects, custody log."""
+    # Fail before deleting --out so a typo or a missing PCAP cannot
+    # wipe a previous run.
+    if report_format not in REPORT_FORMATS:
+        raise _unsupported_report_format(report_format)
     pcap = Path(pcap)
     out = Path(out)
     # None means "use built-in defaults" so existing callers stay unchanged.
     # Named thr (not t) so it does not collide with packet timestamps.
     thr = thresholds if thresholds is not None else Thresholds()
+    if not pcap.is_file():
+        raise FileNotFoundError(f"PCAP not found: {pcap}")
     if out.exists():
         shutil.rmtree(out)
     (out / "extracted_objects").mkdir(parents=True)
@@ -505,72 +569,96 @@ def analyze_pcap(
 
     order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     findings.sort(key=lambda f: order.get(f[0], 9))
-    _, chain = verify(out / "chain_of_custody.jsonl")
+    custody_path = out / "chain_of_custody.jsonl"
+    custody_ok, chain = verify(custody_path)
+    # verify() already walked the file; count lines for the JSON summary.
+    custody_entries = sum(1 for line in custody_path.read_text().splitlines() if line.strip())
 
-    md = [
-        f"# Network Forensics Report - {case_id}",
-        "",
-        "## Evidence",
-        "",
-        "| Field | Value |",
-        "|---|---|",
-        f"| Capture | `{pcap.name}` ({pcap.stat().st_size:,} bytes) |",
-        f"| SHA-256 | `{pre['sha256']}` |",
-        f"| Unchanged after analysis | {'YES' if unchanged else 'NO'} |",
-        f"| Packets | {len(pkts)} |",
-        f"| Time span | {format_ts(t0)} to {format_ts(t1)} |",
-        f"| Custody log | {chain} |",
-        f"| Cross-check | {cross} |",
-        "",
-        "## Executive summary",
-        "",
-        summarize_findings(findings),
-        "",
-        "## Findings",
-        "",
-        "| Severity | Finding | Detail |",
-        "|---|---|---|",
-    ]
-    md += [f"| {s} | {t} | {d} |" for s, t, d in findings]
-    md += [
-        "",
-        "## Timeline (non-informational events)",
-        "",
-        "| Time | Sev | Category | Detail | ATT&CK |",
-        "|---|---|---|---|---|",
-    ]
-    md += [
-        f"| {format_ts(e[0])} | {e[1]} | {e[2]} | {e[3]} | {e[4]} |"
-        for e in events
-        if e[1] != "INFO"
-    ]
-    md += [
-        "",
-        "## Indicators of compromise",
-        "",
-        "| Type | Value | Context |",
-        "|---|---|---|",
-    ]
-    md += [f"| {k} | `{v}` | {c} |" for k, v, c in iocs]
-    md += [
-        "",
-        "## Top talkers (bytes)",
-        "",
-        "| Source | Destination | Bytes |",
-        "|---|---|---|",
-    ]
-    md += [f"| {s} | {d} | {b:,} |" for (s, d), b in talk.most_common(8)]
-    md += [
-        "",
-        "## Limitations",
-        "",
-        "- Heuristic thresholds need baselining on real networks to cut false positives.",
-        "- Encrypted traffic (TLS/HTTPS) hides payloads; use SNI, JA3/JA4, certs, flow metadata.",
-        "- Passwords are masked in this report; full values stay only in the original evidence.",
-        "- Generated by [pcaplens](https://github.com/GameMaster007/pcaplens).",
-    ]
-    report_path = out / "report.md"
-    report_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    # CSVs and the custody log are already on disk. Only the report
+    # filename changes: report.json vs report.md.
+    if report_format == "json":
+        report_path = out / "report.json"
+        payload = build_json_report(
+            case_id=case_id,
+            findings=findings,
+            iocs=iocs,
+            custody_ok=custody_ok,
+            custody_summary=chain,
+            custody_entries=custody_entries,
+            pcap_unchanged=unchanged,
+            sha256=pre["sha256"],
+        )
+        report_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    elif report_format == "markdown":
+        md = [
+            f"# Network Forensics Report - {case_id}",
+            "",
+            "## Evidence",
+            "",
+            "| Field | Value |",
+            "|---|---|",
+            f"| Capture | `{pcap.name}` ({pcap.stat().st_size:,} bytes) |",
+            f"| SHA-256 | `{pre['sha256']}` |",
+            f"| Unchanged after analysis | {'YES' if unchanged else 'NO'} |",
+            f"| Packets | {len(pkts)} |",
+            f"| Time span | {format_ts(t0)} to {format_ts(t1)} |",
+            f"| Custody log | {chain} |",
+            f"| Cross-check | {cross} |",
+            "",
+            "## Executive summary",
+            "",
+            summarize_findings(findings),
+            "",
+            "## Findings",
+            "",
+            "| Severity | Finding | Detail |",
+            "|---|---|---|",
+        ]
+        md += [f"| {s} | {t} | {d} |" for s, t, d in findings]
+        md += [
+            "",
+            "## Timeline (non-informational events)",
+            "",
+            "| Time | Sev | Category | Detail | ATT&CK |",
+            "|---|---|---|---|---|",
+        ]
+        md += [
+            f"| {format_ts(e[0])} | {e[1]} | {e[2]} | {e[3]} | {e[4]} |"
+            for e in events
+            if e[1] != "INFO"
+        ]
+        md += [
+            "",
+            "## Indicators of compromise",
+            "",
+            "| Type | Value | Context |",
+            "|---|---|---|",
+        ]
+        md += [f"| {k} | `{v}` | {c} |" for k, v, c in iocs]
+        md += [
+            "",
+            "## Top talkers (bytes)",
+            "",
+            "| Source | Destination | Bytes |",
+            "|---|---|---|",
+        ]
+        md += [f"| {s} | {d} | {b:,} |" for (s, d), b in talk.most_common(8)]
+        md += [
+            "",
+            "## Limitations",
+            "",
+            "- Heuristic thresholds need baselining on real networks to cut false positives.",
+            "- Encrypted traffic (TLS/HTTPS) hides payloads; use SNI, JA3/JA4, certs, flow metadata.",
+            "- Passwords are masked in this report; full values stay only in the original evidence.",
+            "- Generated by [pcaplens](https://github.com/GameMaster007/pcaplens).",
+        ]
+        report_path = out / "report.md"
+        report_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    else:
+        raise _unsupported_report_format(report_format)
 
     return AnalysisResult(
         packets=len(pkts),

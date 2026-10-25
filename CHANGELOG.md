@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matches them exactly. Unknown keys, wrong types, empty/null files, missing
   paths, nested mappings, and zero/negative counts raise a clear
   `invalid profile …` error. Parsing uses `yaml.safe_load` only.
+- `pcaplens analyse --format json` writes findings, IOCs, and a custody
+  summary as versioned JSON (`schema_version`). Markdown remains the default.
 
 ## [0.1.0] - 2026-10-21
 
