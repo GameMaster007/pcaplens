@@ -26,3 +26,35 @@ You should receive an acknowledgement within 7 days.
 pcaplens analyses packet captures **offline**. It does not open network sockets
 to fetch threat intel by default. Findings are heuristic indicators, not proof
 of compromise. Only analyse captures you are authorised to examine.
+
+## Untrusted PCAPs
+
+Treat every capture as untrusted input. A `.pcap` / `.pcapng` file is a
+length-prefixed binary format: lying `incl_len` values, truncated records,
+and malformed DNS or HTTP payloads are a real attack surface (memory
+exhaustion, long loops, unexpected exceptions).
+
+pcaplens therefore:
+
+- **Streams** packets from disk instead of loading the whole file via
+  `rdpcap`. Classic PCAP records (little-endian, big-endian, and
+  nanosecond-resolution magics) are parsed by hand so a 2 GiB `incl_len`
+  is rejected before any corresponding read. PCAPng blocks are walked by
+  hand: every Total Length is checked against the remaining file size
+  before any read, so a 120-byte file that claims a 2.1 GiB block cannot
+  allocate. Packet-size limits use captured length, not on-wire length.
+- **Bounds memory** with `ParseLimits` (file size, packet count, captured
+  packet size, reassembled TCP stream size, HTTP header/body size, DNS
+  name length). Defaults live in `pcaplens.parse.ParseLimits` and can be
+  passed into `analyze_pcap(..., limits=...)`.
+- **Fails closed** on a structural problem (bad magic, truncated header,
+  empty file, limit breach). The CLI prints `error: ...` to stderr and
+  exits non-zero — it does not crash or hang.
+- **Skips** individual frames whose DNS/HTTP payload is garbage, rather
+  than aborting the rest of a readable capture.
+
+Do not raise the limits to “unlimited” on captures from an unknown
+source. Prefer working on a **copy**; pcaplens hashes the file before and
+after analysis. Limits and fail-closed errors reduce the crash/hang
+surface, but a bug in a dependency can still exist — report those
+privately (see above).

@@ -9,6 +9,7 @@ Every finding is mapped to [MITRE ATT&CK](https://attack.mitre.org/).
 ```bash
 pip install pcaplens          # once published
 pcaplens analyse capture.pcap --case-id INC-42 --out ./out
+pcaplens analyse capture.pcap --profile profiles/default.yaml --out ./out
 ```
 
 > **Authorised use only.** Analyse traffic you own or have explicit permission
@@ -25,7 +26,9 @@ pcaplens analyse capture.pcap --case-id INC-42 --out ./out
 | Data exfiltration | Large internal→external TCP stream | T1041 |
 | Cleartext FTP creds | `USER`/`PASS` on port 21 (password masked in report) | T1552 / T1040 |
 
-Also notes scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
+TLS SNI hostnames from ClientHello are recorded as informational context
+(visited-site metadata). They are **not** findings or IOCs. Also notes
+scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
 
 ## Quickstart
 
@@ -37,8 +40,11 @@ pip install -e ".[dev]"
 # generate a synthetic demo capture (not committed as a binary)
 pcaplens gen-sample --out samples/office_lan.pcap
 
-# analyse it
+# analyse it (Markdown report is the default)
 pcaplens analyse samples/office_lan.pcap --case-id DEMO-001 --out output --examiner "You"
+
+# same analysis as machine-readable JSON
+pcaplens analyse samples/office_lan.pcap --format json --out output-json
 
 # verify the custody log
 pcaplens verify-custody output/chain_of_custody.jsonl
@@ -55,7 +61,9 @@ tshark --export-objects found 21 HTTP objects; this tool extracted 21
 ```
 
 `output/report.md` includes an executive summary, severity-ranked findings,
-ATT&CK-mapped timeline, IOC table, and top talkers. Also written:
+ATT&CK-mapped timeline, IOC table, and top talkers. With `--format json` the
+report is `output/report.json` instead (see [JSON report](#json-report)).
+Also written:
 
 - `events.csv` — full timeline  
 - `iocs.csv` — indicators  
@@ -65,7 +73,9 @@ ATT&CK-mapped timeline, IOC table, and top talkers. Also written:
 ## How detections work (thresholds)
 
 Constants live in `pcaplens.thresholds` and are intentionally simple so you can
-defend them in a viva or tune them on a clean baseline:
+defend them in a viva or tune them on a clean baseline. Override them with
+`--profile lab.yaml` (see `profiles/default.yaml` for the built-in values).
+Unknown keys, wrong types, empty files, and zero/negative counts are rejected:
 
 | Constant | Default | Meaning |
 |----------|---------|---------|
@@ -78,21 +88,60 @@ defend them in a viva or tune them on a clean baseline:
 Beaconing uses a **median** gap test so one long upload does not hide an
 otherwise metronomic beacon (a plain stdev/mean test would).
 
+## JSON report
+
+`pcaplens analyse capture.pcap --format json --out ./out` writes
+`out/report.json`. The schema is versioned (`schema_version`, currently
+`"1.0"`) and documented in [docs/json-report.md](docs/json-report.md).
+
+```json
+{
+  "schema_version": "1.0",
+  "case_id": "INC-42",
+  "findings": [
+    {"severity": "HIGH", "title": "Port scan", "detail": "..."}
+  ],
+  "iocs": [
+    {"type": "ip", "value": "10.10.0.99", "context": "internal scanning host"}
+  ],
+  "custody": {
+    "summary": "chain intact (4 entries)",
+    "intact": true,
+    "entries": 4,
+    "pcap_unchanged": true,
+    "sha256": "..."
+  }
+}
+```
+
 ## Library API
 
 ```python
-from pcaplens import analyze_pcap
+from pcaplens import analyze_pcap, load_profile
 
+# built-in defaults
 result = analyze_pcap("capture.pcap", case_id="INC-1", out="out")
+# or override from a YAML profile
+result = analyze_pcap(
+    "capture.pcap",
+    thresholds=load_profile("lab.yaml"),
+    out="out",
+)
 print(len(result.findings), result.sha256)
+
+result = analyze_pcap("capture.pcap", out="out-json", report_format="json")
 ```
 
 ## Limitations
 
 - Tuned for lab / teaching captures; production networks need baselining
   (software updaters also “beacon”).
-- TLS payloads are opaque — use SNI / JA3 / cert / flow metadata (roadmap).
-- TCP reassembly is best-effort (seq map); not a full Wireshark replacement.
+- TLS payloads stay opaque; SNI is read from ClientHello (JA3/JA4 still on the roadmap).
+- Internal hosts are RFC 1918 IPv4 (including IPv4-mapped IPv6) and IPv6
+  ULA / link-local / loopback; documentation prefixes (RFC 5737,
+  `2001:db8::/32`) count as external.
+- TCP reassembly is best-effort (seq map; retransmits are ignored); not a
+  full Wireshark replacement.
 - Not an accredited forensic method under the UK Forensic Science Regulator Code.
 
 ## Ethics & legal
@@ -106,11 +155,10 @@ print(len(result.findings), result.sha256)
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). Friendly starter tasks:
 
-1. Add JA3/SNI extraction for TLS ClientHello (no decryption).  
+1. Add JA3/JA4 fingerprints from TLS ClientHello (SNI is already extracted).  
 2. Emit findings as Sigma-like YAML or a tiny Suricata rule stub.  
 3. HTML report theme (keep Markdown as default).  
-4. IPv6 support in the internal/external classifier.  
-5. Progress bar / packet count for large PCAPs.  
+4. Progress bar / packet count for large PCAPs.  
 
 ## Development
 

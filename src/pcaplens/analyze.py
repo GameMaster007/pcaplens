@@ -5,6 +5,7 @@ import base64
 import csv
 import hashlib
 import ipaddress
+import json
 import math
 import re
 import shutil
@@ -16,14 +17,44 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scapy.all import DNS, DNSQR, IP, TCP, rdpcap
+from scapy.all import DNS, DNSQR, IP, TCP, IPv6
 
-from pcaplens import thresholds as T
 from pcaplens.custody import CustodyLog, hash_file, verify
+from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError, load_packets
+from pcaplens.thresholds import Thresholds
+from pcaplens.tls import extract_sni
 
-RFC1918 = [
+# Bump this string when the --format json object shape changes in a
+# breaking way (renamed, removed, or retyped fields). It is a string,
+# not a number, so "1.0" and "1.10" stay distinct.
+JSON_SCHEMA_VERSION = "1.0"
+
+# Values --format / report_format accept. markdown stays the default so
+# existing scripts keep writing report.md.
+REPORT_FORMATS = ("markdown", "json")
+
+
+def _unsupported_report_format(report_format: str) -> ValueError:
+    allowed = " or ".join(repr(item) for item in REPORT_FORMATS)
+    return ValueError(f"unsupported report format {report_format!r}; use {allowed}")
+
+
+# Site/local prefixes for internal vs external (exfil) classification.
+# IPv4: RFC 1918 only. Do not use ipaddress.is_private — it treats RFC 5737
+# documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) as
+# private, which would hide the lab "external" hosts used in tests.
+# IPv6: RFC 4193 ULA (fc00::/7), link-local (fe80::/10), loopback (::1).
+# is_internal unwraps IPv4-mapped IPv6 (::ffff:...) before checking this list.
+INTERNAL_NETWORKS = [
     ipaddress.ip_network(n)
-    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    for n in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+        "fe80::/10",
+        "::1/128",
+    )
 ]
 SCRIPTED_UA = re.compile(
     r"python-requests|curl/|wget/|powershell|go-http-client", re.I
@@ -37,8 +68,31 @@ def format_ts(t: float) -> str:
 
 
 def is_internal(ip: str) -> bool:
-    # Do not use ipaddress.is_private: it treats RFC 5737 docs ranges as private.
-    return any(ipaddress.ip_address(ip) in n for n in RFC1918)
+    """Return True if *ip* is a site/local address we treat as internal.
+
+    IPv4 (and IPv4-mapped IPv6 such as ``::ffff:10.0.0.1``): RFC 1918 only.
+    Loopback and RFC 5737 documentation ranges stay external.
+
+    IPv6: RFC 4193 unique-local (``fc00::/7``), link-local (``fe80::/10``),
+    and loopback (``::1``). A ``%zone`` suffix (``fe80::1%eth0``) is ignored
+    because it names a local interface, not a different address.
+    """
+    # Some Python versions reject "fe80::1%eth0"; the zone is not the address.
+    host = ip.rsplit("%", 1)[0]
+    addr = ipaddress.ip_address(host)
+    # ::ffff:x.x.x.x is IPv4 sitting on an IPv6 socket — use the IPv4 rules.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in network for network in INTERNAL_NETWORKS)
+
+
+def l3_addrs(pkt: Any) -> tuple[str, str] | None:
+    """Return (src, dst) from IPv4, or IPv6 if there is no IPv4 layer."""
+    if IP in pkt:
+        return pkt[IP].src, pkt[IP].dst
+    if IPv6 in pkt:
+        return pkt[IPv6].src, pkt[IPv6].dst
+    return None
 
 
 def entropy(s: str) -> float:
@@ -67,61 +121,106 @@ def sniff_type(data: bytes) -> str:
         return "binary"
 
 
-def reassemble(pkts: Any) -> tuple[dict, dict]:
+def reassemble(
+    pkts: Any, max_stream_bytes: int = DEFAULT_LIMITS.max_stream_bytes
+) -> tuple[dict, dict]:
     streams: dict = defaultdict(dict)
     first_seen: dict = {}
+    sizes: dict = defaultdict(int)
     for p in pkts:
-        if IP in p and TCP in p:
-            key = (p[IP].src, p[TCP].sport, p[IP].dst, p[TCP].dport)
+        try:
+            addrs = l3_addrs(p)
+            if not addrs or TCP not in p:
+                continue
+            src, dst = addrs
+            key = (src, p[TCP].sport, dst, p[TCP].dport)
             first_seen.setdefault(key, float(p.time))
             payload = bytes(p[TCP].payload)
-            if payload:
-                streams[key].setdefault(p[TCP].seq, payload)
+            seq = int(p[TCP].seq)
+        except Exception:
+            continue
+        if not payload:
+            continue
+        # Retransmits share a seq; they must not spend the stream-size budget.
+        if seq in streams[key]:
+            continue
+        if sizes[key] + len(payload) > max_stream_bytes:
+            continue
+        streams[key][seq] = payload
+        sizes[key] += len(payload)
     return (
         {k: b"".join(v[s] for s in sorted(v)) for k, v in streams.items()},
         first_seen,
     )
 
 
-def parse_http(data: bytes) -> list[tuple[str, dict[str, str], bytes]]:
+def parse_http(
+    data: bytes,
+    *,
+    max_body: int = DEFAULT_LIMITS.max_http_body_bytes,
+    max_header: int = DEFAULT_LIMITS.max_http_header_bytes,
+    max_messages: int = DEFAULT_LIMITS.max_http_messages,
+) -> list[tuple[str, dict[str, str], bytes]]:
+    """Split a byte string into HTTP messages. Never raises on bad input."""
     msgs: list = []
     i = 0
-    while i < len(data):
+    while i < len(data) and len(msgs) < max_messages:
         end = data.find(b"\r\n\r\n", i)
         if end < 0:
+            break
+        if end - i > max_header:
             break
         head = data[i:end].decode("latin-1").split("\r\n")
         headers = {
             k.strip().lower(): v.strip()
             for k, _, v in (h.partition(":") for h in head[1:])
+            if k.strip()
         }
-        length = int(headers.get("content-length", 0) or 0)
+        raw_len = headers.get("content-length", "0") or "0"
+        # A 64 KiB string of digits would become a huge int. Real Content-Length
+        # values fit in 16 digits (up to a petabyte).
+        if len(raw_len) > 16:
+            length = 0
+        else:
+            try:
+                length = int(raw_len)
+            except ValueError:
+                length = 0
+        if length < 0:
+            length = 0
+        available = len(data) - (end + 4)
+        length = min(length, max_body, max(available, 0))
         body = data[end + 4 : end + 4 + length]
-        msgs.append((head[0], headers, body))
-        i = end + 4 + length
+        msgs.append((head[0] if head else "", headers, body))
+        nxt = end + 4 + length
+        if nxt <= i:
+            break
+        i = nxt
     return msgs
 
 
 def summarize_findings(findings: list[tuple[str, str, str]]) -> str:
-    if not findings:
+    # INFO rows are observational context (e.g. TLS SNI), not detections.
+    scored = [f for f in findings if f[0] != "INFO"]
+    if not scored:
         return "No suspicious activity detected by the current rules."
-    cats = Counter(t for _, t, _ in findings)
-    worst = findings[0][0]
+    cats = Counter(t for _, t, _ in scored)
+    worst = scored[0][0]
     lines = [
-        f"{len(findings)} findings (highest severity {worst}): "
+        f"{len(scored)} findings (highest severity {worst}): "
         + "; ".join(f"{c} x{n}" for c, n in cats.items())
         + "."
     ]
     recs = []
-    if any("Executable" in t or "beacon" in t.lower() for _, t, _ in findings):
+    if any("Executable" in t or "beacon" in t.lower() for _, t, _ in scored):
         recs.append("isolate the affected host and image disk + memory")
-    if any("exfil" in t.lower() or "tunnel" in t.lower() for _, t, _ in findings):
+    if any("exfil" in t.lower() or "tunnel" in t.lower() for _, t, _ in scored):
         recs.append("block the listed domains/IPs and assess what data left")
-    if any("credential" in t.lower() for _, t, _ in findings):
+    if any("credential" in t.lower() for _, t, _ in scored):
         recs.append(
             "reset exposed accounts and replace cleartext protocols (FTP -> SFTP)"
         )
-    if any("scan" in t.lower() for _, t, _ in findings):
+    if any("scan" in t.lower() for _, t, _ in scored):
         recs.append("identify who/what ran the scan from the internal host")
     return lines[0] + (
         " Recommended actions: " + "; ".join(recs) + "." if recs else ""
@@ -134,10 +233,73 @@ class AnalysisResult:
     findings: list[tuple[str, str, str]] = field(default_factory=list)
     iocs: list[tuple[str, str, str]] = field(default_factory=list)
     events: list[tuple] = field(default_factory=list)
+    tls_sni: list[tuple[str, str, int, str]] = field(default_factory=list)
     report_path: Path | None = None
     sha256: str = ""
     unchanged: bool = True
     cross_check: str = ""
+
+
+def build_json_report(
+    *,
+    case_id: str,
+    findings: list[tuple[str, str, str]],
+    iocs: list[tuple[str, str, str]],
+    custody_ok: bool,
+    custody_summary: str,
+    custody_entries: int,
+    pcap_unchanged: bool,
+    sha256: str,
+) -> dict[str, Any]:
+    """Build the versioned JSON report written by --format json.
+
+    The object always has the same top-level keys so a parser can rely
+    on them: schema_version, case_id, findings, iocs, custody.
+    findings and iocs may be empty lists (a clean capture).
+    """
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "case_id": case_id,
+        # Each finding is the same (severity, title, detail) tuple the
+        # Markdown table uses, just as an object instead of a row.
+        "findings": [
+            {"severity": severity, "title": title, "detail": detail}
+            for severity, title, detail in findings
+        ],
+        # Same (type, value, context) rows as iocs.csv.
+        "iocs": [
+            {"type": kind, "value": value, "context": context}
+            for kind, value, context in iocs
+        ],
+        "custody": {
+            "summary": custody_summary,
+            "intact": custody_ok,
+            "entries": custody_entries,
+            "pcap_unchanged": pcap_unchanged,
+            "sha256": sha256,
+        },
+    }
+
+
+def _dns_qname(pkt: Any, max_bytes: int) -> str | None:
+    """Return a query name, or None if the DNS layer is missing / hostile."""
+    try:
+        if DNS not in pkt or pkt[DNS].qr != 0 or not pkt.haslayer(DNSQR):
+            return None
+        raw = pkt[DNSQR].qname
+        if raw is None:
+            return None
+        if isinstance(raw, bytes):
+            if len(raw) > max_bytes:
+                return None
+            name = raw.decode("ascii", errors="replace")
+        else:
+            name = str(raw)
+            if len(name) > max_bytes:
+                return None
+        return name.rstrip(".")
+    except Exception:
+        return None
 
 
 def analyze_pcap(
@@ -147,10 +309,26 @@ def analyze_pcap(
     examiner: str | None = None,
     out: str | Path = "output",
     tshark_cross_check: bool = True,
+    thresholds: Thresholds | None = None,
+    report_format: str = "markdown",
+    limits: ParseLimits | None = None,
 ) -> AnalysisResult:
-    """Analyse a PCAP offline; write report.md, CSVs, objects, custody log."""
+    """Analyse a PCAP offline; write report, CSVs, objects, custody log."""
+    # Fail before deleting --out so a typo or a missing PCAP cannot
+    # wipe a previous run.
+    if report_format not in REPORT_FORMATS:
+        raise _unsupported_report_format(report_format)
+    limits = limits or DEFAULT_LIMITS
     pcap = Path(pcap)
     out = Path(out)
+    # None means "use built-in defaults" so existing callers stay unchanged.
+    # Named thr (not t) so it does not collide with packet timestamps.
+    thr = thresholds if thresholds is not None else Thresholds()
+    if not pcap.exists():
+        raise FileNotFoundError(f"PCAP not found: {pcap}")
+    if not pcap.is_file():
+        raise PcapParseError(f"PCAP path is not a regular file: {pcap}")
+    pkts = load_packets(pcap, limits)
     if out.exists():
         shutil.rmtree(out)
     (out / "extracted_objects").mkdir(parents=True)
@@ -158,10 +336,6 @@ def analyze_pcap(
     log = CustodyLog(out / "chain_of_custody.jsonl", case_id, examiner)
     pre = hash_file(pcap)
     log.record("pcap_hashed_before_analysis", file=str(pcap.resolve()), **pre)
-
-    pkts = rdpcap(str(pcap))
-    if not pkts:
-        raise ValueError("PCAP contains no packets")
     t0, t1 = float(pkts[0].time), float(pkts[-1].time)
     events: list = []
     iocs: list = []
@@ -174,15 +348,31 @@ def analyze_pcap(
         if (kind, value) not in {(k, v) for k, v, _ in iocs}:
             iocs.append((kind, value, context))
 
+    def http_messages(blob: bytes) -> list:
+        return parse_http(
+            blob,
+            max_body=limits.max_http_body_bytes,
+            max_header=limits.max_http_header_bytes,
+            max_messages=limits.max_http_messages,
+        )
+
     talk: Counter = Counter()
     for p in pkts:
-        if IP in p:
-            talk[(p[IP].src, p[IP].dst)] += len(p)
+        try:
+            addrs = l3_addrs(p)
+            if addrs:
+                talk[addrs] += len(p)
+        except Exception:
+            continue
 
     syns: dict = defaultdict(list)
     for p in pkts:
-        if IP in p and TCP in p and p[TCP].flags == "S":
-            syns[(p[IP].src, p[IP].dst)].append((float(p.time), p[TCP].dport))
+        try:
+            addrs = l3_addrs(p)
+            if addrs and TCP in p and p[TCP].flags == "S":
+                syns[addrs].append((float(p.time), p[TCP].dport))
+        except Exception:
+            continue
 
     for (src, dst), lst in syns.items():
         lst.sort()
@@ -190,23 +380,21 @@ def analyze_pcap(
             window = {
                 port
                 for t, port in lst
-                if lst[i][0] <= t <= lst[i][0] + T.SCAN_WINDOW
+                if lst[i][0] <= t <= lst[i][0] + thr.SCAN_WINDOW
             }
-            if len(window) >= T.SCAN_PORTS:
+            if len(window) >= thr.SCAN_PORTS:
                 open_ports = sorted(
                     {
                         p[TCP].sport
                         for p in pkts
-                        if IP in p
-                        and TCP in p
-                        and p[IP].src == dst
-                        and p[IP].dst == src
+                        if TCP in p
                         and p[TCP].flags == "SA"
+                        and l3_addrs(p) == (dst, src)
                     }
                 )
                 desc = (
                     f"{src} probed {len(window)} ports on {dst} "
-                    f"in <= {T.SCAN_WINDOW}s (open: {open_ports})"
+                    f"in <= {thr.SCAN_WINDOW}s (open: {open_ports})"
                 )
                 event(
                     lst[i][0],
@@ -224,19 +412,20 @@ def analyze_pcap(
         for t, port in lst:
             conns[(src, dst, port)].append(t)
     for (src, dst, port), times in conns.items():
-        if len(times) < T.BEACON_MIN_CONNS:
+        # Need two timestamps to form a gap; a bad Thresholds object must not crash.
+        if len(times) < max(thr.BEACON_MIN_CONNS, 2):
             continue
         times.sort()
         gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
         med = statistics.median(gaps)
-        regular = [g for g in gaps if abs(g - med) <= T.BEACON_TOLERANCE * med]
+        regular = [g for g in gaps if abs(g - med) <= thr.BEACON_TOLERANCE * med]
         ratio = len(regular) / len(gaps)
-        if med > 0 and ratio >= T.BEACON_MIN_RATIO:
+        if med > 0 and ratio >= thr.BEACON_MIN_RATIO:
             jitter = statistics.pstdev(regular) if len(regular) > 1 else 0.0
             desc = (
                 f"{src} -> {dst}:{port} {len(times)} connections, "
                 f"median interval {med:.1f}s, {ratio:.0%} of intervals "
-                f"within +-10% (jitter {jitter:.1f}s)"
+                f"within +-{thr.BEACON_TOLERANCE:.0%} (jitter {jitter:.1f}s)"
             )
             event(
                 times[0],
@@ -250,14 +439,15 @@ def analyze_pcap(
 
     dns_by_domain: dict = defaultdict(set)
     for p in pkts:
-        if DNS in p and p[DNS].qr == 0 and p.haslayer(DNSQR):
-            q = p[DNSQR].qname.decode(errors="replace").rstrip(".")
-            labels = q.split(".")
-            base = ".".join(labels[-2:]) if len(labels) >= 2 else q
-            dns_by_domain[base].add(q)
-            longest = max(labels, key=len)
-            if len(longest) >= T.DNS_LABEL_LEN and entropy(longest) >= T.DNS_ENTROPY:
-                dns_by_domain[base].add("__suspicious__")
+        q = _dns_qname(p, limits.max_dns_name_bytes)
+        if not q:
+            continue
+        labels = q.split(".")
+        base = ".".join(labels[-2:]) if len(labels) >= 2 else q
+        dns_by_domain[base].add(q)
+        longest = max(labels, key=len)
+        if len(longest) >= thr.DNS_LABEL_LEN and entropy(longest) >= thr.DNS_ENTROPY:
+            dns_by_domain[base].add("__suspicious__")
     for base, names in dns_by_domain.items():
         if "__suspicious__" not in names:
             continue
@@ -280,13 +470,15 @@ def analyze_pcap(
             f"e.g. {sample[:60]}..."
             + (f" decoded (base32): '{decoded}...'" if decoded else "")
         )
-        first = min(
-            float(p.time)
-            for p in pkts
-            if DNS in p
-            and p.haslayer(DNSQR)
-            and base in p[DNSQR].qname.decode(errors="replace")
-        )
+        first_times = []
+        for p in pkts:
+            qn = _dns_qname(p, limits.max_dns_name_bytes)
+            if qn and base in qn:
+                try:
+                    first_times.append(float(p.time))
+                except Exception:
+                    continue
+        first = min(first_times) if first_times else t0
         event(
             first,
             "HIGH",
@@ -297,11 +489,28 @@ def analyze_pcap(
         findings.append(("HIGH", "DNS tunnelling / exfiltration", desc))
         ioc("domain", base, "DNS tunnelling")
 
-    streams, first_seen = reassemble(pkts)
+    streams, first_seen = reassemble(pkts, max_stream_bytes=limits.max_stream_bytes)
     obj_n = 0
+    # Reconnects share a dest; SNI rows ignore the client port (sport).
+    seen_sni: set[tuple[str, str, int, str]] = set()
     for (src, sport, dst, dport), data in streams.items():
         t = first_seen[(src, sport, dst, dport)]
-        if is_internal(src) and not is_internal(dst) and len(data) >= T.EXFIL_BYTES:
+        # ClientHello is the first bytes of the client->server stream.
+        sni = extract_sni(data)
+        if sni:
+            flow = (src, dst, dport, sni)
+            if flow not in seen_sni:
+                seen_sni.add(flow)
+                desc = f"{src} -> {dst}:{dport} TLS SNI '{sni}'"
+                event(
+                    t,
+                    "INFO",
+                    "TLS SNI",
+                    desc,
+                    "T1573 Encrypted Channel",
+                )
+                # Benign SNI is host-visit context, not a finding or IOC.
+        if is_internal(src) and not is_internal(dst) and len(data) >= thr.EXFIL_BYTES:
             desc = f"{src} sent {len(data):,} bytes to {dst}:{dport} in one stream"
             event(
                 t,
@@ -340,9 +549,12 @@ def analyze_pcap(
             b"HTTP/"
         ):
             last_req = (src, "/")
-            for start, headers, body in parse_http(data):
+            for start, headers, body in http_messages(data):
                 if start.startswith(("GET", "POST", "PUT", "HEAD")):
-                    method, uri = start.split(" ")[:2]
+                    parts = start.split()
+                    if len(parts) < 2:
+                        continue
+                    method, uri = parts[0], parts[1]
                     host = headers.get("host", dst)
                     ua = headers.get("user-agent", "")
                     event(
@@ -377,13 +589,13 @@ def analyze_pcap(
                     obj_n += 1
                     host, uri = last_req
                     rev = streams.get((dst, dport, src, sport), b"")
-                    reqs = [
-                        m
-                        for m in parse_http(rev)
-                        if m[0].split(" ")[0] in ("GET", "POST")
-                    ]
+                    reqs = []
+                    for m in http_messages(rev):
+                        req_parts = m[0].split()
+                        if len(req_parts) >= 2 and req_parts[0] in ("GET", "POST"):
+                            reqs.append((req_parts, m[1]))
                     if reqs:
-                        uri = reqs[0][0].split(" ")[1]
+                        uri = reqs[0][0][1]
                         host = reqs[0][1].get("host", src)
                     name = (
                         re.sub(
@@ -460,80 +672,120 @@ def analyze_pcap(
         w.writerow(["type", "value", "context"])
         w.writerows(iocs)
 
-    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
     findings.sort(key=lambda f: order.get(f[0], 9))
-    _, chain = verify(out / "chain_of_custody.jsonl")
+    custody_path = out / "chain_of_custody.jsonl"
+    custody_ok, chain = verify(custody_path)
+    # verify() already walked the file; count lines for the JSON summary.
+    custody_entries = sum(1 for line in custody_path.read_text().splitlines() if line.strip())
 
-    md = [
-        f"# Network Forensics Report - {case_id}",
-        "",
-        "## Evidence",
-        "",
-        "| Field | Value |",
-        "|---|---|",
-        f"| Capture | `{pcap.name}` ({pcap.stat().st_size:,} bytes) |",
-        f"| SHA-256 | `{pre['sha256']}` |",
-        f"| Unchanged after analysis | {'YES' if unchanged else 'NO'} |",
-        f"| Packets | {len(pkts)} |",
-        f"| Time span | {format_ts(t0)} to {format_ts(t1)} |",
-        f"| Custody log | {chain} |",
-        f"| Cross-check | {cross} |",
-        "",
-        "## Executive summary",
-        "",
-        summarize_findings(findings),
-        "",
-        "## Findings",
-        "",
-        "| Severity | Finding | Detail |",
-        "|---|---|---|",
-    ]
-    md += [f"| {s} | {t} | {d} |" for s, t, d in findings]
-    md += [
-        "",
-        "## Timeline (non-informational events)",
-        "",
-        "| Time | Sev | Category | Detail | ATT&CK |",
-        "|---|---|---|---|---|",
-    ]
-    md += [
-        f"| {format_ts(e[0])} | {e[1]} | {e[2]} | {e[3]} | {e[4]} |"
-        for e in events
-        if e[1] != "INFO"
-    ]
-    md += [
-        "",
-        "## Indicators of compromise",
-        "",
-        "| Type | Value | Context |",
-        "|---|---|---|",
-    ]
-    md += [f"| {k} | `{v}` | {c} |" for k, v, c in iocs]
-    md += [
-        "",
-        "## Top talkers (bytes)",
-        "",
-        "| Source | Destination | Bytes |",
-        "|---|---|---|",
-    ]
-    md += [f"| {s} | {d} | {b:,} |" for (s, d), b in talk.most_common(8)]
-    md += [
-        "",
-        "## Limitations",
-        "",
-        "- Heuristic thresholds need baselining on real networks to cut false positives.",
-        "- Encrypted traffic (TLS/HTTPS) hides payloads; use SNI, JA3/JA4, certs, flow metadata.",
-        "- Passwords are masked in this report; full values stay only in the original evidence.",
-        "- Generated by [pcaplens](https://github.com/GameMaster007/pcaplens).",
-    ]
-    report_path = out / "report.md"
-    report_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    # CSVs and the custody log are already on disk. Only the report
+    # filename changes: report.json vs report.md.
+    if report_format == "json":
+        report_path = out / "report.json"
+        payload = build_json_report(
+            case_id=case_id,
+            findings=findings,
+            iocs=iocs,
+            custody_ok=custody_ok,
+            custody_summary=chain,
+            custody_entries=custody_entries,
+            pcap_unchanged=unchanged,
+            sha256=pre["sha256"],
+        )
+        report_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    elif report_format == "markdown":
+        md = [
+            f"# Network Forensics Report - {case_id}",
+            "",
+            "## Evidence",
+            "",
+            "| Field | Value |",
+            "|---|---|",
+            f"| Capture | `{pcap.name}` ({pcap.stat().st_size:,} bytes) |",
+            f"| SHA-256 | `{pre['sha256']}` |",
+            f"| Unchanged after analysis | {'YES' if unchanged else 'NO'} |",
+            f"| Packets | {len(pkts)} |",
+            f"| Time span | {format_ts(t0)} to {format_ts(t1)} |",
+            f"| Custody log | {chain} |",
+            f"| Cross-check | {cross} |",
+            "",
+            "## Executive summary",
+            "",
+            summarize_findings(findings),
+            "",
+            "## Findings",
+            "",
+            "| Severity | Finding | Detail |",
+            "|---|---|---|",
+        ]
+        md += [f"| {s} | {t} | {d} |" for s, t, d in findings]
+        md += [
+            "",
+            "## Timeline (non-informational events)",
+            "",
+            "| Time | Sev | Category | Detail | ATT&CK |",
+            "|---|---|---|---|---|",
+        ]
+        md += [
+            f"| {format_ts(e[0])} | {e[1]} | {e[2]} | {e[3]} | {e[4]} |"
+            for e in events
+            if e[1] != "INFO"
+        ]
+        md += [
+            "",
+            "## Indicators of compromise",
+            "",
+            "| Type | Value | Context |",
+            "|---|---|---|",
+        ]
+        md += [f"| {k} | `{v}` | {c} |" for k, v, c in iocs]
+        md += [
+            "",
+            "## TLS SNI (informational)",
+            "",
+            "Hostnames from TLS ClientHello. These are visited-site context, "
+            "not findings or indicators of compromise.",
+            "",
+            "| Client | Server | Port | Hostname |",
+            "|---|---|---|---|",
+        ]
+        sni_rows = [
+            f"| {src} | {dst} | {dport} | `{host}` |"
+            for src, dst, dport, host in sorted(seen_sni)
+        ]
+        md += sni_rows or ["| — | — | — | none observed |"]
+        md += [
+            "",
+            "## Top talkers (bytes)",
+            "",
+            "| Source | Destination | Bytes |",
+            "|---|---|---|",
+        ]
+        md += [f"| {s} | {d} | {b:,} |" for (s, d), b in talk.most_common(8)]
+        md += [
+            "",
+            "## Limitations",
+            "",
+            "- Heuristic thresholds need baselining on real networks to cut false positives.",
+            "- Encrypted traffic (TLS/HTTPS) hides payloads; SNI is read from ClientHello (no decrypt).",
+            "- Passwords are masked in this report; full values stay only in the original evidence.",
+            "- Generated by [pcaplens](https://github.com/GameMaster007/pcaplens).",
+        ]
+        report_path = out / "report.md"
+        report_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    else:
+        raise _unsupported_report_format(report_format)
 
     return AnalysisResult(
         packets=len(pkts),
         findings=findings,
         iocs=iocs,
         events=events,
+        tls_sni=sorted(seen_sni),
         report_path=report_path,
         sha256=pre["sha256"],
         unchanged=unchanged,
