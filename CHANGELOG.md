@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Streaming ingest: one pass over the file, compact TCP/DNS facts, Scapy
   packets dropped. `--max-packets` / `--max-file-bytes` override the
   fail-closed limits. A 1M-packet synthetic capture is streamed in CI.
+- Committed synthetic fixtures (`samples/fixtures/`), a JSON report
+  schema checker, and a CLI exit-code contract (0 / 1 / 2 / 130).
 
 ### Changed
 - GitHub Actions CI runs on every pull request (not only those targeting
