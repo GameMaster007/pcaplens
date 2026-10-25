@@ -19,6 +19,9 @@ C2_6 = "2001:db8:1::66"
 LINKLOCAL6 = "fe80::21"
 PEER_LINKLOCAL6 = "fe80::5"
 LOOPBACK6 = "::1"
+# RFC 5737 / RFC 2606 names for the TLS SNI fixture (issue #1).
+TLS_SERVER = "198.51.100.80"
+TLS_SNI_HOST = "login.example"
 
 
 def ip_hdr(src: str, dst: str) -> IP | IPv6:
@@ -162,6 +165,90 @@ class _PcapBuilder:
         return path
 
 
+def _as_name_bytes(name: str | bytes) -> bytes:
+    """On the wire SNI is ASCII; UTF-8 is kept only so invalid names can be tested."""
+    if isinstance(name, bytes):
+        return name
+    try:
+        return name.encode("ascii")
+    except UnicodeEncodeError:
+        return name.encode("utf-8")
+
+
+def _tls_ext(ext_type: int, data: bytes) -> bytes:
+    """One TLS extension: type (2) + length (2) + data."""
+    return ext_type.to_bytes(2, "big") + len(data).to_bytes(2, "big") + data
+
+
+def _sni_ext(names: list[bytes]) -> bytes:
+    """RFC 6066 server_name list. Each entry is name_type 0 (host_name)."""
+    entries = b"".join(b"\x00" + len(n).to_bytes(2, "big") + n for n in names)
+    return _tls_ext(0, len(entries).to_bytes(2, "big") + entries)
+
+
+def build_client_hello(
+    hostname: str | bytes | None = TLS_SNI_HOST,
+    extra_hostnames: list[str | bytes] | None = None,
+    grease: bool = False,
+) -> bytes:
+    """Minimal TLS 1.2 ClientHello (not a complete handshake).
+
+    ``hostname=None`` omits the SNI extension. Pass ``extra_hostnames`` for
+    more than one SNI entry, and ``grease=True`` to wrap SNI with RFC 8701
+    GREASE extensions (0x0A0A before, 0x1A1A after) so the parser skips both.
+    """
+    names: list[bytes] = []
+    if hostname is not None:
+        names.append(_as_name_bytes(hostname))
+    if extra_hostnames:
+        names.extend(_as_name_bytes(n) for n in extra_hostnames)
+
+    ext_blobs: list[bytes] = []
+    if grease:
+        ext_blobs.append(_tls_ext(0x0A0A, b"\x00\x00"))
+    if names:
+        ext_blobs.append(_sni_ext(names))
+    if grease:
+        ext_blobs.append(_tls_ext(0x1A1A, b"\x00"))
+    blob = b"".join(ext_blobs)
+    extensions = len(blob).to_bytes(2, "big") + blob
+
+    body = (
+        b"\x03\x03"  # client_version TLS 1.2
+        + bytes(range(32))  # random
+        + b"\x00"  # empty session_id
+        + b"\x00\x02\x00\x2f"  # one cipher: TLS_RSA_WITH_AES_128_CBC_SHA
+        + b"\x01\x00"  # null compression
+        + extensions
+    )
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x03" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def build_tls_sni_pcap(
+    path: str | Path,
+    hostname: str = TLS_SNI_HOST,
+    client_hello: bytes | None = None,
+    dport: int = 443,
+    mss: int = 1400,
+    sessions: int = 1,
+) -> Path:
+    """TCP flow(s) whose client payload is a TLS ClientHello.
+
+    ``mss`` smaller than the hello splits it across TCP segments; the
+    analyser joins them by sequence number. ``sessions`` > 1 emits
+    reconnects to the same host so de-duplication can be tested.
+    Port is not required to be 443 — TLS on 8443 is the same parse.
+    """
+    b = _PcapBuilder(seed=7)
+    payload = client_hello if client_hello is not None else build_client_hello(hostname)
+    t = 10.0
+    for _ in range(sessions):
+        t = b.tcp_session(VICTIM, TLS_SERVER, dport, [payload], [b""], t, mss=mss)
+        t += 1.0
+    return b.write(Path(path))
+
+
 def build_clean_pcap(path: str | Path) -> Path:
     """Benign browsing only — should produce zero findings."""
     b = _PcapBuilder(seed=42)
@@ -175,6 +262,10 @@ def build_clean_pcap(path: str | Path) -> Path:
         b.http_get(
             VICTIM, ip, name, "/", b"<html><body>ordinary page</body></html>",
             "text/html", 5.1 + i * 20,
+        )
+        # Ordinary HTTPS: SNI must stay informational (not a finding or IOC).
+        b.tcp_session(
+            VICTIM, ip, 443, [build_client_hello(name)], [b""], 5.5 + i * 20,
         )
     return b.write(Path(path))
 

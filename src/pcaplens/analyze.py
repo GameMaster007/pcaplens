@@ -21,6 +21,7 @@ from scapy.all import DNS, DNSQR, IP, TCP, IPv6, rdpcap
 
 from pcaplens.custody import CustodyLog, hash_file, verify
 from pcaplens.thresholds import Thresholds
+from pcaplens.tls import extract_sni
 
 # Bump this string when the --format json object shape changes in a
 # breaking way (renamed, removed, or retyped fields). It is a string,
@@ -157,25 +158,27 @@ def parse_http(data: bytes) -> list[tuple[str, dict[str, str], bytes]]:
 
 
 def summarize_findings(findings: list[tuple[str, str, str]]) -> str:
-    if not findings:
+    # INFO rows are observational context (e.g. TLS SNI), not detections.
+    scored = [f for f in findings if f[0] != "INFO"]
+    if not scored:
         return "No suspicious activity detected by the current rules."
-    cats = Counter(t for _, t, _ in findings)
-    worst = findings[0][0]
+    cats = Counter(t for _, t, _ in scored)
+    worst = scored[0][0]
     lines = [
-        f"{len(findings)} findings (highest severity {worst}): "
+        f"{len(scored)} findings (highest severity {worst}): "
         + "; ".join(f"{c} x{n}" for c, n in cats.items())
         + "."
     ]
     recs = []
-    if any("Executable" in t or "beacon" in t.lower() for _, t, _ in findings):
+    if any("Executable" in t or "beacon" in t.lower() for _, t, _ in scored):
         recs.append("isolate the affected host and image disk + memory")
-    if any("exfil" in t.lower() or "tunnel" in t.lower() for _, t, _ in findings):
+    if any("exfil" in t.lower() or "tunnel" in t.lower() for _, t, _ in scored):
         recs.append("block the listed domains/IPs and assess what data left")
-    if any("credential" in t.lower() for _, t, _ in findings):
+    if any("credential" in t.lower() for _, t, _ in scored):
         recs.append(
             "reset exposed accounts and replace cleartext protocols (FTP -> SFTP)"
         )
-    if any("scan" in t.lower() for _, t, _ in findings):
+    if any("scan" in t.lower() for _, t, _ in scored):
         recs.append("identify who/what ran the scan from the internal host")
     return lines[0] + (
         " Recommended actions: " + "; ".join(recs) + "." if recs else ""
@@ -188,6 +191,7 @@ class AnalysisResult:
     findings: list[tuple[str, str, str]] = field(default_factory=list)
     iocs: list[tuple[str, str, str]] = field(default_factory=list)
     events: list[tuple] = field(default_factory=list)
+    tls_sni: list[tuple[str, str, int, str]] = field(default_factory=list)
     report_path: Path | None = None
     sha256: str = ""
     unchanged: bool = True
@@ -406,8 +410,25 @@ def analyze_pcap(
 
     streams, first_seen = reassemble(pkts)
     obj_n = 0
+    # Reconnects share a dest; SNI rows ignore the client port (sport).
+    seen_sni: set[tuple[str, str, int, str]] = set()
     for (src, sport, dst, dport), data in streams.items():
         t = first_seen[(src, sport, dst, dport)]
+        # ClientHello is the first bytes of the client->server stream.
+        sni = extract_sni(data)
+        if sni:
+            flow = (src, dst, dport, sni)
+            if flow not in seen_sni:
+                seen_sni.add(flow)
+                desc = f"{src} -> {dst}:{dport} TLS SNI '{sni}'"
+                event(
+                    t,
+                    "INFO",
+                    "TLS SNI",
+                    desc,
+                    "T1573 Encrypted Channel",
+                )
+                # Benign SNI is host-visit context, not a finding or IOC.
         if is_internal(src) and not is_internal(dst) and len(data) >= thr.EXFIL_BYTES:
             desc = f"{src} sent {len(data):,} bytes to {dst}:{dport} in one stream"
             event(
@@ -567,7 +588,7 @@ def analyze_pcap(
         w.writerow(["type", "value", "context"])
         w.writerows(iocs)
 
-    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
     findings.sort(key=lambda f: order.get(f[0], 9))
     custody_path = out / "chain_of_custody.jsonl"
     custody_ok, chain = verify(custody_path)
@@ -640,6 +661,21 @@ def analyze_pcap(
         md += [f"| {k} | `{v}` | {c} |" for k, v, c in iocs]
         md += [
             "",
+            "## TLS SNI (informational)",
+            "",
+            "Hostnames from TLS ClientHello. These are visited-site context, "
+            "not findings or indicators of compromise.",
+            "",
+            "| Client | Server | Port | Hostname |",
+            "|---|---|---|---|",
+        ]
+        sni_rows = [
+            f"| {src} | {dst} | {dport} | `{host}` |"
+            for src, dst, dport, host in sorted(seen_sni)
+        ]
+        md += sni_rows or ["| — | — | — | none observed |"]
+        md += [
+            "",
             "## Top talkers (bytes)",
             "",
             "| Source | Destination | Bytes |",
@@ -651,7 +687,7 @@ def analyze_pcap(
             "## Limitations",
             "",
             "- Heuristic thresholds need baselining on real networks to cut false positives.",
-            "- Encrypted traffic (TLS/HTTPS) hides payloads; use SNI, JA3/JA4, certs, flow metadata.",
+            "- Encrypted traffic (TLS/HTTPS) hides payloads; SNI is read from ClientHello (no decrypt).",
             "- Passwords are masked in this report; full values stay only in the original evidence.",
             "- Generated by [pcaplens](https://github.com/GameMaster007/pcaplens).",
         ]
@@ -665,6 +701,7 @@ def analyze_pcap(
         findings=findings,
         iocs=iocs,
         events=events,
+        tls_sni=sorted(seen_sni),
         report_path=report_path,
         sha256=pre["sha256"],
         unchanged=unchanged,

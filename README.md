@@ -26,7 +26,9 @@ pcaplens analyse capture.pcap --profile profiles/default.yaml --out ./out
 | Data exfiltration | Large internal→external TCP stream | T1041 |
 | Cleartext FTP creds | `USER`/`PASS` on port 21 (password masked in report) | T1552 / T1040 |
 
-Also notes scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
+TLS SNI hostnames from ClientHello are recorded as informational context
+(visited-site metadata). They are **not** findings or IOCs. Also notes
+scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
 
 ## Quickstart
 
@@ -134,7 +136,7 @@ result = analyze_pcap("capture.pcap", out="out-json", report_format="json")
 
 - Tuned for lab / teaching captures; production networks need baselining
   (software updaters also “beacon”).
-- TLS payloads are opaque — use SNI / JA3 / cert / flow metadata (roadmap).
+- TLS payloads stay opaque; SNI is read from ClientHello (JA3/JA4 still on the roadmap).
 - Internal hosts are RFC 1918 IPv4 (including IPv4-mapped IPv6) and IPv6
   ULA / link-local / loopback; documentation prefixes (RFC 5737,
   `2001:db8::/32`) count as external.
@@ -152,7 +154,7 @@ result = analyze_pcap("capture.pcap", out="out-json", report_format="json")
 
 See [docs/ROADMAP.md](docs/ROADMAP.md). Friendly starter tasks:
 
-1. Add JA3/SNI extraction for TLS ClientHello (no decryption).  
+1. Add JA3/JA4 fingerprints from TLS ClientHello (SNI is already extracted).  
 2. Emit findings as Sigma-like YAML or a tiny Suricata rule stub.  
 3. HTML report theme (keep Markdown as default).  
 4. Progress bar / packet count for large PCAPs.  
