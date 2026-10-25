@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary as versioned JSON (`schema_version`). Markdown remains the default.
 - TLS ClientHello SNI extraction per flow (no decryption). Hostnames are
   informational context only — not findings or IOCs. JA3/JA4 remain out of scope.
+- `pcaplens report` writes Markdown and/or HTML reports of findings, IOCs,
+  and the non-informational timeline (`--format markdown|html|both`).
 
 ## [0.1.0] - 2026-10-21
 
