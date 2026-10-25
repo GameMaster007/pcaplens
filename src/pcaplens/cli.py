@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from pcaplens import __version__
 from pcaplens.analyze import REPORT_FORMATS, analyze_pcap
 from pcaplens.custody import verify as verify_custody
-from pcaplens.parse import PcapParseError
+from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, PcapParseError
 from pcaplens.report import REPORT_KINDS, write_reports
 from pcaplens.synth import build_attack_pcap, build_clean_pcap
 from pcaplens.thresholds import ProfileError, Thresholds, load_profile
@@ -22,6 +23,15 @@ def _profile_arg(value: str) -> Thresholds:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _limits_from_args(args: argparse.Namespace) -> ParseLimits:
+    limits = DEFAULT_LIMITS
+    if getattr(args, "max_packets", None):
+        limits = replace(limits, max_packets=args.max_packets)
+    if getattr(args, "max_file_bytes", None):
+        limits = replace(limits, max_file_bytes=args.max_file_bytes)
+    return limits
+
+
 def cmd_analyse(args: argparse.Namespace) -> int:
     try:
         result = analyze_pcap(
@@ -32,6 +42,7 @@ def cmd_analyse(args: argparse.Namespace) -> int:
             tshark_cross_check=not args.no_tshark,
             thresholds=args.thresholds,
             report_format=args.report_format,
+            limits=_limits_from_args(args),
         )
     except (ValueError, OSError) as exc:
         # Empty captures, a bad report_format, a missing PCAP, or parse error.
@@ -64,6 +75,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             tshark_cross_check=not args.no_tshark,
             thresholds=args.thresholds,
             report_format="markdown",
+            limits=_limits_from_args(args),
         )
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -131,6 +143,20 @@ def build_parser() -> argparse.ArgumentParser:
             "(built-in defaults if omitted; see profiles/default.yaml)"
         ),
     )
+    a.add_argument(
+        "--max-packets",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Refuse captures with more than N packets (default {DEFAULT_LIMITS.max_packets:,})",
+    )
+    a.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Refuse captures larger than N bytes (default {DEFAULT_LIMITS.max_file_bytes:,})",
+    )
     a.set_defaults(func=cmd_analyse)
 
     r = sub.add_parser(
@@ -163,6 +189,20 @@ def build_parser() -> argparse.ArgumentParser:
             "YAML file of detection thresholds "
             "(built-in defaults if omitted; see profiles/default.yaml)"
         ),
+    )
+    r.add_argument(
+        "--max-packets",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Refuse captures with more than N packets (default {DEFAULT_LIMITS.max_packets:,})",
+    )
+    r.add_argument(
+        "--max-file-bytes",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"Refuse captures larger than N bytes (default {DEFAULT_LIMITS.max_file_bytes:,})",
     )
     r.set_defaults(func=cmd_report)
 

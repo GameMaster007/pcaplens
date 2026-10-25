@@ -7,6 +7,8 @@ from typing import Any
 
 from scapy.all import DNS, IP, UDP, IPv6
 
+from pcaplens.ingest import DnsFact
+
 # Cut-offs kept here so YAML profiles stay backward-compatible.
 # Tuned against benign CDN / Windows-Update / browsing captures:
 # 20 unique labels (CDNs rarely mint that many *new* high-entropy names
@@ -96,32 +98,38 @@ def analyze_dns(
 
     for p in pkts:
         try:
-            if DNS not in p:
-                continue
-            name = _qname(p, max_name_bytes)
-            t = float(p.time)
+            if isinstance(p, DnsFact):
+                name = p.qname
+                t = p.t
+                qr, rcode = p.qr, p.rcode
+                client = p.dst if p.sport == 53 else p.src
+            else:
+                if DNS not in p:
+                    continue
+                name = _qname(p, max_name_bytes)
+                t = float(p.time)
+                qr = int(p[DNS].qr)
+                rcode = int(p[DNS].rcode)
+                client = _client(p) or "?"
         except Exception:
             continue
-        if not name:
-            continue
-        labels = [lab for lab in name.split(".") if lab]
-        if not labels:
-            continue
-        base = ".".join(labels[-2:]) if len(labels) >= 2 else name
-        queries_by_base[base].add(name)
-        longest = max(labels, key=len)
-        if (
-            len(longest) >= DGA_LABEL_LEN
-            and _entropy(longest) >= DGA_ENTROPY
-            and longest != base
-        ):
-            dga_names.append((t, name))
-        if ODD_LABEL_LEN <= len(longest) < 40:
-            odd.append((t, name))
+        if name:
+            labels = [lab for lab in name.split(".") if lab]
+            if labels:
+                base = ".".join(labels[-2:]) if len(labels) >= 2 else name
+                queries_by_base[base].add(name)
+                longest = max(labels, key=len)
+                if (
+                    len(longest) >= DGA_LABEL_LEN
+                    and _entropy(longest) >= DGA_ENTROPY
+                    and longest != base
+                ):
+                    dga_names.append((t, name))
+                if ODD_LABEL_LEN <= len(longest) < 40:
+                    odd.append((t, name))
         try:
-            if p[DNS].qr == 1 and int(p[DNS].rcode) == 3:
-                client = _client(p) or "?"
-                nx_by_client[client].append(t)
+            if qr == 1 and rcode == 3:
+                nx_by_client[client or "?"].append(t)
         except Exception:
             continue
 
