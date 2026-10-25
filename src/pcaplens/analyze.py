@@ -16,15 +16,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scapy.all import DNS, DNSQR, IP, TCP
+from scapy.all import DNS, DNSQR, IP, TCP, IPv6
 
 from pcaplens import thresholds as T
 from pcaplens.custody import CustodyLog, hash_file, verify
 from pcaplens.parse import DEFAULT_LIMITS, ParseLimits, load_packets
 
-RFC1918 = [
+# Site/local prefixes for internal vs external (exfil) classification.
+# IPv4: RFC 1918 only. Do not use ipaddress.is_private — it treats RFC 5737
+# documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) as
+# private, which would hide the lab "external" hosts used in tests.
+# IPv6: RFC 4193 ULA (fc00::/7), link-local (fe80::/10), loopback (::1).
+# is_internal unwraps IPv4-mapped IPv6 (::ffff:...) before checking this list.
+INTERNAL_NETWORKS = [
     ipaddress.ip_network(n)
-    for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    for n in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7",
+        "fe80::/10",
+        "::1/128",
+    )
 ]
 SCRIPTED_UA = re.compile(
     r"python-requests|curl/|wget/|powershell|go-http-client", re.I
@@ -38,12 +51,31 @@ def format_ts(t: float) -> str:
 
 
 def is_internal(ip: str) -> bool:
-    # Do not use ipaddress.is_private: it treats RFC 5737 docs ranges as private.
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return any(addr in n for n in RFC1918)
+    """Return True if *ip* is a site/local address we treat as internal.
+
+    IPv4 (and IPv4-mapped IPv6 such as ``::ffff:10.0.0.1``): RFC 1918 only.
+    Loopback and RFC 5737 documentation ranges stay external.
+
+    IPv6: RFC 4193 unique-local (``fc00::/7``), link-local (``fe80::/10``),
+    and loopback (``::1``). A ``%zone`` suffix (``fe80::1%eth0``) is ignored
+    because it names a local interface, not a different address.
+    """
+    # Some Python versions reject "fe80::1%eth0"; the zone is not the address.
+    host = ip.rsplit("%", 1)[0]
+    addr = ipaddress.ip_address(host)
+    # ::ffff:x.x.x.x is IPv4 sitting on an IPv6 socket — use the IPv4 rules.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in network for network in INTERNAL_NETWORKS)
+
+
+def l3_addrs(pkt: Any) -> tuple[str, str] | None:
+    """Return (src, dst) from IPv4, or IPv6 if there is no IPv4 layer."""
+    if IP in pkt:
+        return pkt[IP].src, pkt[IP].dst
+    if IPv6 in pkt:
+        return pkt[IPv6].src, pkt[IPv6].dst
+    return None
 
 
 def entropy(s: str) -> float:
@@ -80,19 +112,24 @@ def reassemble(
     sizes: dict = defaultdict(int)
     for p in pkts:
         try:
-            if IP not in p or TCP not in p:
+            addrs = l3_addrs(p)
+            if not addrs or TCP not in p:
                 continue
-            key = (p[IP].src, p[TCP].sport, p[IP].dst, p[TCP].dport)
+            src, dst = addrs
+            key = (src, p[TCP].sport, dst, p[TCP].dport)
             first_seen.setdefault(key, float(p.time))
             payload = bytes(p[TCP].payload)
+            seq = int(p[TCP].seq)
         except Exception:
             continue
         if not payload:
             continue
-        # Drop further chunks once a stream hits the cap; keep what we have.
+        # Retransmits share a seq; they must not spend the stream-size budget.
+        if seq in streams[key]:
+            continue
         if sizes[key] + len(payload) > max_stream_bytes:
             continue
-        streams[key].setdefault(p[TCP].seq, payload)
+        streams[key][seq] = payload
         sizes[key] += len(payload)
     return (
         {k: b"".join(v[s] for s in sorted(v)) for k, v in streams.items()},
@@ -249,16 +286,18 @@ def analyze_pcap(
     talk: Counter = Counter()
     for p in pkts:
         try:
-            if IP in p:
-                talk[(p[IP].src, p[IP].dst)] += len(p)
+            addrs = l3_addrs(p)
+            if addrs:
+                talk[addrs] += len(p)
         except Exception:
             continue
 
     syns: dict = defaultdict(list)
     for p in pkts:
         try:
-            if IP in p and TCP in p and p[TCP].flags == "S":
-                syns[(p[IP].src, p[IP].dst)].append((float(p.time), p[TCP].dport))
+            addrs = l3_addrs(p)
+            if addrs and TCP in p and p[TCP].flags == "S":
+                syns[addrs].append((float(p.time), p[TCP].dport))
         except Exception:
             continue
 
@@ -275,11 +314,9 @@ def analyze_pcap(
                     {
                         p[TCP].sport
                         for p in pkts
-                        if IP in p
-                        and TCP in p
-                        and p[IP].src == dst
-                        and p[IP].dst == src
+                        if TCP in p
                         and p[TCP].flags == "SA"
+                        and l3_addrs(p) == (dst, src)
                     }
                 )
                 desc = (

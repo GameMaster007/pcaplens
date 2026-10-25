@@ -6,13 +6,26 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scapy.all import DNS, DNSQR, DNSRR, IP, TCP, UDP, Ether, Raw, wrpcap
+from scapy.all import DNS, DNSQR, DNSRR, IP, TCP, UDP, Ether, IPv6, Raw, wrpcap
 
 VICTIM = "10.10.0.21"
 C2 = "203.0.113.66"
 DROP = "198.51.100.23"
 FS = "10.10.0.5"
 SCANNER = "10.10.0.99"
+# IPv6 counterparts: ULA (internal), documentation prefix (external).
+VICTIM6 = "fd00:10:10::21"
+C2_6 = "2001:db8:1::66"
+LINKLOCAL6 = "fe80::21"
+PEER_LINKLOCAL6 = "fe80::5"
+LOOPBACK6 = "::1"
+
+
+def ip_hdr(src: str, dst: str) -> IP | IPv6:
+    """Build an IPv4 or IPv6 header. A colon in either address means IPv6."""
+    if ":" in src or ":" in dst:
+        return IPv6(src=src, dst=dst)
+    return IP(src=src, dst=dst)
 
 
 class _PcapBuilder:
@@ -30,21 +43,23 @@ class _PcapBuilder:
         return self.macs[ip]
 
     def add(self, pkt, t: float) -> None:
-        framed = Ether(src=self.mac(pkt[IP].src), dst=self.mac(pkt[IP].dst)) / pkt
+        l3 = pkt[IPv6] if IPv6 in pkt else pkt[IP]
+        framed = Ether(src=self.mac(l3.src), dst=self.mac(l3.dst)) / pkt
         framed.time = self.base + t
         self.packets.append(framed)
 
     def dns(self, client: str, name: str, answer: str, t: float, qtype: str = "A") -> None:
         sport = self.rng.randrange(30000, 60000)
+        resolver = "10.10.0.1"
         q = (
-            IP(src=client, dst="10.10.0.1")
+            ip_hdr(client, resolver)
             / UDP(sport=sport, dport=53)
             / DNS(id=self.rng.randrange(65535), rd=1, qd=DNSQR(qname=name, qtype=qtype))
         )
         self.add(q, t)
         rr = DNSRR(rrname=name, type=qtype, ttl=60, rdata=answer)
         r = (
-            IP(src="10.10.0.1", dst=client)
+            ip_hdr(resolver, client)
             / UDP(sport=53, dport=sport)
             / DNS(id=q[DNS].id, qr=1, aa=0, rd=1, ra=1, qd=q[DNS].qd, an=rr)
         )
@@ -63,16 +78,16 @@ class _PcapBuilder:
         sport = self.rng.randrange(40000, 65000)
         cseq = self.rng.randrange(2**31)
         sseq = self.rng.randrange(2**31)
-        self.add(IP(src=cli, dst=srv) / TCP(sport=sport, dport=dport, flags="S", seq=cseq), t)
+        self.add(ip_hdr(cli, srv) / TCP(sport=sport, dport=dport, flags="S", seq=cseq), t)
         self.add(
-            IP(src=srv, dst=cli)
+            ip_hdr(srv, cli)
             / TCP(sport=dport, dport=sport, flags="SA", seq=sseq, ack=cseq + 1),
             t + 0.01,
         )
         cseq += 1
         sseq += 1
         self.add(
-            IP(src=cli, dst=srv) / TCP(sport=sport, dport=dport, flags="A", seq=cseq, ack=sseq),
+            ip_hdr(cli, srv) / TCP(sport=sport, dport=dport, flags="A", seq=cseq, ack=sseq),
             t + 0.02,
         )
         t += 0.03
@@ -86,7 +101,7 @@ class _PcapBuilder:
                     chunk = data[off : off + mss]
                     if src_is_client:
                         self.add(
-                            IP(src=cli, dst=srv)
+                            ip_hdr(cli, srv)
                             / TCP(sport=sport, dport=dport, flags="PA", seq=cseq, ack=sseq)
                             / Raw(chunk),
                             t,
@@ -94,7 +109,7 @@ class _PcapBuilder:
                         cseq += len(chunk)
                     else:
                         self.add(
-                            IP(src=srv, dst=cli)
+                            ip_hdr(srv, cli)
                             / TCP(sport=dport, dport=sport, flags="PA", seq=sseq, ack=cseq)
                             / Raw(chunk),
                             t,
@@ -102,16 +117,16 @@ class _PcapBuilder:
                         sseq += len(chunk)
                     t += 0.005
         self.add(
-            IP(src=cli, dst=srv) / TCP(sport=sport, dport=dport, flags="FA", seq=cseq, ack=sseq),
+            ip_hdr(cli, srv) / TCP(sport=sport, dport=dport, flags="FA", seq=cseq, ack=sseq),
             t,
         )
         self.add(
-            IP(src=srv, dst=cli)
+            ip_hdr(srv, cli)
             / TCP(sport=dport, dport=sport, flags="FA", seq=sseq, ack=cseq + 1),
             t + 0.01,
         )
         self.add(
-            IP(src=cli, dst=srv)
+            ip_hdr(cli, srv)
             / TCP(sport=sport, dport=dport, flags="A", seq=cseq + 1, ack=sseq + 1),
             t + 0.02,
         )
@@ -218,15 +233,15 @@ def build_attack_pcap(path: str | Path) -> Path:
         t = 780 + i * 0.01
         sp = b.rng.randrange(40000, 65000)
         b.add(
-            IP(src=SCANNER, dst=FS)
+            ip_hdr(SCANNER, FS)
             / TCP(sport=sp, dport=port, flags="S", seq=b.rng.randrange(2**31)),
             t,
         )
         if port in open_ports:
-            b.add(IP(src=FS, dst=SCANNER) / TCP(sport=port, dport=sp, flags="SA"), t + 0.001)
-            b.add(IP(src=SCANNER, dst=FS) / TCP(sport=sp, dport=port, flags="R"), t + 0.002)
+            b.add(ip_hdr(FS, SCANNER) / TCP(sport=port, dport=sp, flags="SA"), t + 0.001)
+            b.add(ip_hdr(SCANNER, FS) / TCP(sport=sp, dport=port, flags="R"), t + 0.002)
         else:
-            b.add(IP(src=FS, dst=SCANNER) / TCP(sport=port, dport=sp, flags="RA"), t + 0.001)
+            b.add(ip_hdr(FS, SCANNER) / TCP(sport=port, dport=sp, flags="RA"), t + 0.001)
 
     b.tcp_session(
         SCANNER, FS, 21,
@@ -252,4 +267,36 @@ def build_attack_pcap(path: str | Path) -> Path:
         VICTIM, C2, 8080, [post],
         [b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 1260,
     )
+    return b.write(Path(path))
+
+
+def build_dual_stack_pcap(path: str | Path) -> Path:
+    """IPv4 RFC 1918 plus IPv6 ULA / link-local / loopback vs documentation prefixes."""
+    b = _PcapBuilder(seed=4193)
+    # IPv4 internal -> RFC 5737 documentation (external); small, not exfil.
+    b.http_get(
+        VICTIM, DROP, "update-cdn.example", "/",
+        b"<html>ok</html>", "text/html", 1.0,
+    )
+    # IPv6 ULA -> 2001:db8 documentation (external); large enough to trip exfil.
+    blob = bytes(b.rng.randrange(256) for _ in range(250_000))
+    post = (
+        f"POST /upload HTTP/1.1\r\nHost: [{C2_6}]:8080\r\n"
+        f"User-Agent: python-requests/2.31\r\n"
+        f"Content-Type: application/octet-stream\r\n"
+        f"Content-Length: {len(blob)}\r\n\r\n"
+    ).encode() + blob
+    b.tcp_session(
+        VICTIM6, C2_6, 8080, [post],
+        [b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 10,
+    )
+    # Link-local <-> link-local stays internal; must not count as exfil.
+    b.tcp_session(
+        LINKLOCAL6, PEER_LINKLOCAL6, 80,
+        [b"GET / HTTP/1.1\r\nHost: local\r\n\r\n"],
+        [b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"],
+        20,
+    )
+    # IPv6 loopback is internal.
+    b.tcp_session(LOOPBACK6, LOOPBACK6, 9, [b"hi"], [b"ok"], 30)
     return b.write(Path(path))

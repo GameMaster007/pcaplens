@@ -9,7 +9,8 @@ import struct
 from pathlib import Path
 
 from scapy.layers.inet import IP, TCP, UDP
-from scapy.layers.l2 import Ether
+from scapy.layers.inet6 import IPv6
+from scapy.layers.l2 import CookedLinux, CookedLinuxV2, Ether
 from scapy.packet import Raw
 from scapy.utils import wrpcap, wrpcapng
 
@@ -211,6 +212,68 @@ def write_truncated_pcapng(path: Path) -> Path:
     return write_bytes(path, b"\x0a\x0d\x0d\x0a\x00\x00")
 
 
+def write_pcapng_lying_block_length(path: Path, size: int = 120) -> Path:
+    """~120-byte PCAPng whose next block claims ~2.1 GiB.
+
+    A naive reader would honour Total Length and try to allocate that
+    many bytes. The file stays tiny so the remaining-bytes check must fire.
+    """
+    # Minimal little-endian SHB (28 bytes), then type+tot_len with tot_len=2^31-1.
+    shb = struct.pack("<IIIHHqI", 0x0A0D0D0A, 28, 0x1A2B3C4D, 1, 0, -1, 28)
+    # 0x7FFFFFFC ≈ 2.1 GiB and is 4-byte aligned (unaligned lengths are
+    # rejected earlier; this hits the remaining-bytes check).
+    lie = struct.pack("<II", 6, 0x7FFFFFFC)
+    blob = shb + lie + b"\x00" * max(0, size - len(shb) - len(lie))
+    return write_bytes(path, blob[:size])
+
+
+def write_snaplen_truncated_pcap(path: Path, orig_len: int = 9000) -> Path:
+    """Captured length is small; on-wire orig_len is a jumbo frame."""
+    frame = tiny_frame()
+    blob = pcap_global_header() + pcap_record(frame, incl_len=len(frame), orig_len=orig_len)
+    return write_bytes(path, blob)
+
+
+def write_pcapng_snaplen_truncated(path: Path, orig_len: int = 9000) -> Path:
+    """PCAPng EPB with a small captured length and a huge original length."""
+    frame = tiny_frame()
+    caplen = len(frame)
+    pad = (4 - (caplen % 4)) % 4
+    shb = struct.pack("<IIIHHqI", 0x0A0D0D0A, 28, 0x1A2B3C4D, 1, 0, -1, 28)
+    idb = struct.pack("<IIHHI I", 1, 20, 1, 0, 65535, 20)
+    epb_len = 32 + caplen + pad
+    epb = struct.pack("<IIIIIII", 6, epb_len, 0, 0, 0, caplen, orig_len)
+    epb += frame + (b"\x00" * pad) + struct.pack("<I", epb_len)
+    return write_bytes(path, shb + idb + epb)
+
+
+def write_sll_pcap(path: Path, *, version: int = 1, ipv6: bool = False) -> Path:
+    """Linux cooked capture (tcpdump -i any): SLL or SLL2."""
+    if ipv6:
+        l3 = IPv6(src="fd00:10:10::21", dst="2001:db8::1") / UDP(sport=12345, dport=53) / Raw(
+            b"sll-v6"
+        )
+        proto = 0x86DD
+    else:
+        l3 = IP(src="10.10.0.21", dst="10.10.0.1") / UDP(sport=12345, dport=53) / Raw(b"sll-v4")
+        proto = 0x0800
+    if version == 2:
+        pkt = CookedLinuxV2(proto=proto) / l3
+        network = 276
+    else:
+        pkt = CookedLinux(proto=proto) / l3
+        network = 113
+    return write_bytes(path, pcap_global_header(network=network) + pcap_record(bytes(pkt)))
+
+
+def write_raw_ipv6_pcap(path: Path) -> Path:
+    """DLT_RAW (101) IPv6 datagram, no Ethernet header."""
+    frame = bytes(
+        IPv6(src="fd00::1", dst="2001:db8::1") / UDP(sport=1234, dport=53) / Raw(b"raw6")
+    )
+    return write_bytes(path, pcap_global_header(network=101) + pcap_record(frame))
+
+
 def write_huge_pcap(path: Path, min_bytes: int = 1_048_576) -> Path:
     """Write a valid PCAP that is at least `min_bytes` on disk.
 
@@ -268,6 +331,7 @@ def small_corpus(dir_path: Path) -> dict[str, Path]:
         "zero_length_packet": write_zero_length_packet(dir_path / "zero_len.pcap"),
         "garbage": write_garbage(dir_path / "garbage.pcap"),
         "truncated_pcapng": write_truncated_pcapng(dir_path / "trunc.pcapng"),
+        "pcapng_lying_block": write_pcapng_lying_block_length(dir_path / "lie.pcapng"),
         "malformed_dns": write_malformed_dns(dir_path / "malformed_dns.pcap"),
         "malformed_http": write_malformed_http(dir_path / "malformed_http.pcap"),
     }

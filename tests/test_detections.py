@@ -4,10 +4,22 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from scapy.all import IP, IPv6, rdpcap
 
-from pcaplens.analyze import analyze_pcap
+from pcaplens.analyze import analyze_pcap, is_internal
 from pcaplens.custody import CustodyLog, verify
-from pcaplens.synth import build_attack_pcap, build_clean_pcap
+from pcaplens.synth import (
+    C2_6,
+    DROP,
+    LINKLOCAL6,
+    LOOPBACK6,
+    PEER_LINKLOCAL6,
+    VICTIM,
+    VICTIM6,
+    build_attack_pcap,
+    build_clean_pcap,
+    build_dual_stack_pcap,
+)
 
 
 @pytest.fixture(scope="module")
@@ -20,6 +32,12 @@ def attack_pcap(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def clean_pcap(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("pcaps") / "clean.pcap"
     return build_clean_pcap(path)
+
+
+@pytest.fixture(scope="module")
+def dual_stack_pcap(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("pcaps") / "dual_stack.pcap"
+    return build_dual_stack_pcap(path)
 
 
 @pytest.fixture
@@ -110,3 +128,33 @@ def test_custody_tamper_detected(tmp_path: Path):
 def test_pcap_hash_unchanged(attack_result):
     assert attack_result.unchanged is True
     assert len(attack_result.sha256) == 64
+
+
+def test_dual_stack_capture_has_v4_and_v6(dual_stack_pcap: Path):
+    pkts = rdpcap(str(dual_stack_pcap))
+    v4 = {ip for p in pkts if IP in p for ip in (p[IP].src, p[IP].dst)}
+    v6 = {ip for p in pkts if IPv6 in p for ip in (p[IPv6].src, p[IPv6].dst)}
+    assert VICTIM in v4 and DROP in v4
+    assert {VICTIM6, C2_6, LINKLOCAL6, PEER_LINKLOCAL6, LOOPBACK6} <= v6
+    assert is_internal(VICTIM) and not is_internal(DROP)
+    assert is_internal(VICTIM6) and not is_internal(C2_6)
+    assert is_internal(LINKLOCAL6) and is_internal(PEER_LINKLOCAL6)
+    assert is_internal(LOOPBACK6)
+
+
+def test_dual_stack_ula_exfil_detected(dual_stack_pcap: Path, tmp_path: Path):
+    result = analyze_pcap(
+        dual_stack_pcap,
+        case_id="TEST-DUAL",
+        examiner="pytest",
+        out=tmp_path / "out_dual",
+        tshark_cross_check=False,
+    )
+    exfil = [f for f in result.findings if "exfiltration" in f[1].lower()]
+    assert len(exfil) == 1
+    detail = exfil[0][2]
+    assert VICTIM6 in detail
+    assert C2_6 in detail
+    assert LINKLOCAL6 not in detail
+    assert PEER_LINKLOCAL6 not in detail
+    assert LOOPBACK6 not in detail

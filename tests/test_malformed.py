@@ -22,13 +22,18 @@ from malformed_corpus import (
     write_malformed_http,
     write_many_tiny_packets,
     write_pcapng,
+    write_pcapng_lying_block_length,
+    write_pcapng_snaplen_truncated,
+    write_raw_ipv6_pcap,
+    write_sll_pcap,
+    write_snaplen_truncated_pcap,
     write_truncated_packet,
     write_truncated_pcapng,
     write_valid_tiny_pcap,
 )
-from pcaplens.analyze import analyze_pcap, parse_http
+from pcaplens.analyze import analyze_pcap, parse_http, reassemble
 from pcaplens.cli import main
-from pcaplens.parse import ParseLimits, PcapParseError, iter_packets
+from pcaplens.parse import ParseLimits, PcapParseError, iter_packets, load_packets
 
 # Structural problems the reader must refuse. Application-layer junk
 # (malformed DNS/HTTP) is a skip-and-continue case, not a hard error.
@@ -43,6 +48,7 @@ _MUST_REJECT = (
     "zero_length_packet",
     "garbage",
     "truncated_pcapng",
+    "pcapng_lying_block",
 )
 
 
@@ -254,6 +260,70 @@ def test_pcapng_is_readable(tmp_path: Path):
     pcap = write_pcapng(tmp_path / "ok.pcapng")
     result = _analyse(pcap, tmp_path / "ng_out")
     assert result.packets >= 1
+
+
+def test_pcapng_lying_block_length_does_not_allocate(tmp_path: Path):
+    """A 120-byte PCAPng that claims a 2.1 GiB block must fail closed quickly."""
+    pcap = write_pcapng_lying_block_length(tmp_path / "lie120.pcapng", size=120)
+    assert pcap.stat().st_size == 120
+    with pytest.raises(PcapParseError, match="remain"):
+        _analyse(pcap, tmp_path / "lie120_out")
+
+
+def test_packet_size_limit_uses_captured_not_wire_length(tmp_path: Path):
+    """orig_len / wirelen is 9000; captured bytes are a normal frame."""
+    limits = ParseLimits(max_packet_bytes=256)
+    classic = write_snaplen_truncated_pcap(tmp_path / "snap.pcap", orig_len=9000)
+    result = _analyse(classic, tmp_path / "snap_out", limits=limits)
+    assert result.packets >= 1
+    ng = write_pcapng_snaplen_truncated(tmp_path / "snap.pcapng", orig_len=9000)
+    result_ng = _analyse(ng, tmp_path / "snap_ng_out", limits=limits)
+    assert result_ng.packets >= 1
+
+
+def test_retransmits_do_not_consume_stream_size_cap():
+    from scapy.layers.inet import IP, TCP
+    from scapy.packet import Raw
+
+    first = IP(src="10.10.0.21", dst="198.51.100.10") / TCP(
+        sport=40000, dport=80, flags="PA", seq=1
+    ) / Raw(b"A" * 60)
+    retx = IP(src="10.10.0.21", dst="198.51.100.10") / TCP(
+        sport=40000, dport=80, flags="PA", seq=1
+    ) / Raw(b"A" * 60)
+    nxt = IP(src="10.10.0.21", dst="198.51.100.10") / TCP(
+        sport=40000, dport=80, flags="PA", seq=61
+    ) / Raw(b"B" * 40)
+    # Ten retransmits of the first 60 bytes would exhaust a 100-byte cap
+    # if seq were not deduped, dropping the unique 40-byte segment.
+    streams, _ = reassemble(
+        [first, *[retx] * 10, nxt],
+        max_stream_bytes=100,
+    )
+    key = ("10.10.0.21", 40000, "198.51.100.10", 80)
+    assert key in streams
+    assert streams[key] == (b"A" * 60) + (b"B" * 40)
+
+
+def test_linux_sll_and_sll2_decode_ipv4_and_ipv6(tmp_path: Path):
+    from scapy.all import IP, IPv6
+
+    cases = (
+        write_sll_pcap(tmp_path / "sll4.pcap", version=1, ipv6=False),
+        write_sll_pcap(tmp_path / "sll2_4.pcap", version=2, ipv6=False),
+        write_sll_pcap(tmp_path / "sll6.pcap", version=1, ipv6=True),
+        write_sll_pcap(tmp_path / "sll2_6.pcap", version=2, ipv6=True),
+        write_raw_ipv6_pcap(tmp_path / "raw6.pcap"),
+    )
+    for path in cases:
+        pkts = load_packets(path)
+        assert pkts, path.name
+        pkt = pkts[0]
+        if "6" in path.name or path.name.startswith("raw"):
+            assert IPv6 in pkt, path.name
+        else:
+            assert IP in pkt, path.name
+            assert pkt[IP].src == "10.10.0.21"
 
 
 def test_iter_packets_streams(tmp_path: Path):

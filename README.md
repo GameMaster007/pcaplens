@@ -92,7 +92,10 @@ print(len(result.findings), result.sha256)
 - Tuned for lab / teaching captures; production networks need baselining
   (software updaters also “beacon”).
 - TLS payloads are opaque — use SNI / JA3 / cert / flow metadata (roadmap).
-- TCP reassembly is best-effort (seq map); not a full Wireshark replacement.
+- TCP reassembly is best-effort (seq map; retransmits are ignored); not a
+  full Wireshark replacement.
+- Internal/external classification covers RFC 1918 plus IPv6 ULA, link-local,
+  and loopback. RFC 5737 documentation ranges stay external.
 - Not an accredited forensic method under the UK Forensic Science Regulator Code.
 
 ## Ethics & legal
@@ -109,8 +112,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md). Friendly starter tasks:
 1. Add JA3/SNI extraction for TLS ClientHello (no decryption).  
 2. Emit findings as Sigma-like YAML or a tiny Suricata rule stub.  
 3. HTML report theme (keep Markdown as default).  
-4. IPv6 support in the internal/external classifier.  
-5. Progress bar / packet count for large PCAPs.  
+4. Progress bar / packet count for large PCAPs.  
 
 ## Development
 

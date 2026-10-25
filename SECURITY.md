@@ -39,8 +39,10 @@ pcaplens therefore:
 - **Streams** packets from disk instead of loading the whole file via
   `rdpcap`. Classic PCAP records (little-endian, big-endian, and
   nanosecond-resolution magics) are parsed by hand so a 2 GiB `incl_len`
-  is rejected before any corresponding read. PCAPng is accepted too, with
-  the same file-size and per-packet caps.
+  is rejected before any corresponding read. PCAPng blocks are walked by
+  hand: every Total Length is checked against the remaining file size
+  before any read, so a 120-byte file that claims a 2.1 GiB block cannot
+  allocate. Packet-size limits use captured length, not on-wire length.
 - **Bounds memory** with `ParseLimits` (file size, packet count, captured
   packet size, reassembled TCP stream size, HTTP header/body size, DNS
   name length). Defaults live in `pcaplens.parse.ParseLimits` and can be
