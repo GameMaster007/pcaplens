@@ -24,9 +24,10 @@ pcaplens analyse capture.pcap --case-id INC-42 --out ./out
 | Executable download | MZ/ELF magic in HTTP response body | T1105 |
 | Data exfiltration | Large internal→external TCP stream | T1041 |
 | Cleartext FTP creds | `USER`/`PASS` on port 21 (password masked in report) | T1552 / T1040 |
-| TLS SNI | Hostname from the ClientHello (no decryption) | T1573 |
 
-Also notes scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
+TLS SNI hostnames from ClientHello are recorded as informational context
+(visited-site metadata). They are **not** findings or IOCs. Also notes
+scripted User-Agents (`python-requests`, `curl`, …) as IOCs.
 
 ## Quickstart
 

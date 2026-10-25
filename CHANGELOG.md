@@ -8,8 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- TLS ClientHello SNI extraction per flow (no decryption). Hostname is written
-  to findings and IOCs. JA3/JA4 remain out of scope.
+- TLS ClientHello SNI extraction per flow (no decryption). Hostnames are
+  informational context only — not findings or IOCs. JA3/JA4 remain out of scope.
 
 ## [0.1.0] - 2026-10-21
 

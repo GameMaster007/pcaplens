@@ -248,6 +248,10 @@ def build_clean_pcap(path: str | Path) -> Path:
             VICTIM, ip, name, "/", b"<html><body>ordinary page</body></html>",
             "text/html", 5.1 + i * 20,
         )
+        # Ordinary HTTPS: SNI must stay informational (not a finding or IOC).
+        b.tcp_session(
+            VICTIM, ip, 443, [build_client_hello(name)], [b""], 5.5 + i * 20,
+        )
     return b.write(Path(path))
 
 

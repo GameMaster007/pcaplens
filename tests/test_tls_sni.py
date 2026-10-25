@@ -6,8 +6,13 @@ from pathlib import Path
 import pytest
 from scapy.all import TCP, rdpcap
 
-from pcaplens.analyze import analyze_pcap
-from pcaplens.synth import TLS_SNI_HOST, build_client_hello, build_tls_sni_pcap
+from pcaplens.analyze import analyze_pcap, summarize_findings
+from pcaplens.synth import (
+    TLS_SNI_HOST,
+    build_clean_pcap,
+    build_client_hello,
+    build_tls_sni_pcap,
+)
 from pcaplens.tls import extract_sni
 
 
@@ -19,6 +24,14 @@ def _analyse(pcap: Path, tmp_path: Path, name: str):
         out=tmp_path / f"out_{name}",
         tshark_cross_check=False,
     )
+
+
+def _sni_hosts(result) -> list[str]:
+    return [host for _src, _dst, _dport, host in result.tls_sni]
+
+
+def _sni_events(result) -> list[str]:
+    return [desc for _t, _sev, cat, desc, _att in result.events if cat == "TLS SNI"]
 
 
 def _sni_findings(result) -> list[str]:
@@ -102,12 +115,41 @@ def test_extract_sni_malformed_returns_none(blob: bytes):
     assert extract_sni(blob) is None
 
 
-def test_sni_in_findings_and_iocs(tmp_path: Path):
+def test_sni_is_informational_context_not_finding_or_ioc(tmp_path: Path):
     pcap = build_tls_sni_pcap(tmp_path / "sni.pcap")
     result = _analyse(pcap, tmp_path, "sni")
-    assert any(TLS_SNI_HOST in detail for detail in _sni_findings(result))
-    assert TLS_SNI_HOST in _sni_iocs(result)
-    assert TLS_SNI_HOST in result.report_path.read_text(encoding="utf-8")
+    report = result.report_path.read_text(encoding="utf-8")
+    assert TLS_SNI_HOST in _sni_hosts(result)
+    assert any(TLS_SNI_HOST in desc for desc in _sni_events(result))
+    assert _sni_findings(result) == []
+    assert _sni_iocs(result) == []
+    assert result.findings == []
+    assert result.iocs == []
+    assert "No suspicious activity detected by the current rules." in report
+    assert "## TLS SNI (informational)" in report
+    assert TLS_SNI_HOST in report
+    iocs_csv = result.report_path.parent / "iocs.csv"
+    assert TLS_SNI_HOST not in iocs_csv.read_text(encoding="utf-8")
+
+
+def test_clean_https_browsing_is_not_suspicious(tmp_path: Path):
+    pcap = build_clean_pcap(tmp_path / "clean_https.pcap")
+    result = _analyse(pcap, tmp_path, "clean_https")
+    report = result.report_path.read_text(encoding="utf-8")
+    assert result.findings == []
+    assert result.iocs == []
+    assert summarize_findings(result.findings) == (
+        "No suspicious activity detected by the current rules."
+    )
+    assert "No suspicious activity detected by the current rules." in report
+    assert "1 findings" not in report
+    visited = {"intranet.corp.example", "news.example", "weather.example"}
+    assert visited <= set(_sni_hosts(result))
+    ioc_values = {value for _kind, value, _ctx in result.iocs}
+    assert visited.isdisjoint(ioc_values)
+    assert "## TLS SNI (informational)" in report
+    for host in visited:
+        assert host in report
 
 
 def test_sni_from_clienthello_split_across_tcp_segments(tmp_path: Path):
@@ -118,31 +160,36 @@ def test_sni_from_clienthello_split_across_tcp_segments(tmp_path: Path):
     payload_pkts = [p for p in rdpcap(str(pcap)) if TCP in p and bytes(p[TCP].payload)]
     assert len(payload_pkts) >= 3
     result = _analyse(pcap, tmp_path, "split")
-    assert _sni_findings(result)
-    assert TLS_SNI_HOST in _sni_iocs(result)
+    assert TLS_SNI_HOST in _sni_hosts(result)
+    assert _sni_findings(result) == []
+    assert TLS_SNI_HOST not in _sni_iocs(result)
 
 
 def test_sni_on_non_443_port(tmp_path: Path):
     pcap = build_tls_sni_pcap(tmp_path / "altport.pcap", dport=8443)
     result = _analyse(pcap, tmp_path, "altport")
-    assert any(":8443" in detail and TLS_SNI_HOST in detail for detail in _sni_findings(result))
-    assert TLS_SNI_HOST in _sni_iocs(result)
+    assert any(dport == 8443 and host == TLS_SNI_HOST for _s, _d, dport, host in result.tls_sni)
+    assert any(":8443" in desc and TLS_SNI_HOST in desc for desc in _sni_events(result))
+    assert _sni_findings(result) == []
+    assert TLS_SNI_HOST not in _sni_iocs(result)
 
 
-def test_duplicate_flows_emit_one_finding_and_ioc(tmp_path: Path):
+def test_duplicate_flows_emit_one_sni_row(tmp_path: Path):
     pcap = build_tls_sni_pcap(tmp_path / "dup.pcap", sessions=2)
     result = _analyse(pcap, tmp_path, "dup")
-    assert len(_sni_findings(result)) == 1
-    assert _sni_iocs(result).count(TLS_SNI_HOST) == 1
+    assert _sni_hosts(result).count(TLS_SNI_HOST) == 1
+    assert _sni_findings(result) == []
+    assert _sni_iocs(result) == []
 
 
-def test_empty_hostname_pcap_has_no_sni_finding(tmp_path: Path):
+def test_empty_hostname_pcap_has_no_sni_context(tmp_path: Path):
     pcap = build_tls_sni_pcap(
         tmp_path / "empty.pcap",
         client_hello=build_client_hello(""),
     )
     result = _analyse(pcap, tmp_path, "empty")
     assert result.packets > 0
+    assert result.tls_sni == []
     assert _sni_findings(result) == []
     assert _sni_iocs(result) == []
 
@@ -152,5 +199,6 @@ def test_truncated_clienthello_pcap_does_not_crash(tmp_path: Path):
     pcap = build_tls_sni_pcap(tmp_path / "trunc.pcap", client_hello=hello[:12])
     result = _analyse(pcap, tmp_path, "trunc")
     assert result.packets > 0
+    assert result.tls_sni == []
     assert _sni_findings(result) == []
     assert TLS_SNI_HOST not in _sni_iocs(result)
